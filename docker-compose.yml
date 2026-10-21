@@ -9,9 +9,11 @@
 #   4. Control Panel > Login Portal > Advanced > Reverse Proxy: add a rule from your
 #      HTTPS hostname to http://localhost:8480 (or whatever APP_PORT is).
 #
-# STATUS: draft. The images below do not exist yet. Each `build:` path is a
-# folder we still have to write (api/, etl/). Run `cp .env.example .env`, fill it
-# in, then `docker compose up -d --build` once those folders exist.
+# Images: GitHub Actions builds them on every merge to main and pushes them to
+# ghcr.io (see .github/workflows/images.yml). Watchtower on the NAS can then update
+# them. The `build:` folders are only a fallback for building on the NAS itself.
+# If the repo is private, the NAS needs a one-time `docker login ghcr.io` with a
+# GitHub token that has read:packages.
 #
 # Two long-running services share one data volume:
 #   etl : downloads the city + Agence data every day, parses it, writes /data/current
@@ -32,7 +34,10 @@ x-common: &common
 services:
   etl:
     <<: *common
-    build: ./etl
+    image: ${IMAGE_PREFIX:-ghcr.io/thepaultanner/montreal-parking}-etl:${IMAGE_TAG:-latest}
+    build: ./etl # fallback if the image can't be pulled
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
     container_name: mtl-parking-etl
     environment:
       <<: *common-env
@@ -53,7 +58,10 @@ services:
 
   app:
     <<: *common
-    build: ./api
+    image: ${IMAGE_PREFIX:-ghcr.io/thepaultanner/montreal-parking}-app:${IMAGE_TAG:-latest}
+    build: ./api # fallback if the image can't be pulled
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
     container_name: mtl-parking-app
     depends_on:
       etl:
