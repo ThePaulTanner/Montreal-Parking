@@ -3,6 +3,17 @@
 ## Goal
 A self-hosted web app, run on the NAS in Docker, where I log in and see Montreal parking data on a map.
 
+## What it must do
+1. **Drive mode.** On a phone, using GPS, show for the street I'm on, for **each side of the street**:
+   - can I park right now (free, paid, or not allowed)
+   - the cost (from the paid-parking data)
+   - the time period: until when it stays this way, and what changes next (for example "free until 16:00, then no parking")
+2. **City map.** Pan around Montréal and see the curb coloured by status, for any chosen time (a "now" default plus a time scrubber).
+3. **Filters by parking type.** Free, paid, time-limited, no parking, no stopping, reserved (disabled, EV, residents' permit), motorcycles only and trucks only.
+4. **Login.** Only I can see it.
+
+Consequence for the data: "each side of the street" means turning point signs into curb segments. That needs a street centreline layer, so we can snap each pole to its street and use `FLECHE_PAN` to decide which side it governs. This is the riskiest part of the build, so it gets its own early spike (see phases).
+
 ## Data (CC-BY 4.0, attribution required)
 - **Ville de Montréal, "Signalisation (stationnement sur rue)"**: sign records, with a French free-text restriction in `DESCRIPTION_RPA`. About 144k records, refreshed daily. The city says some arrondissements are incomplete and Île-Bizard–Sainte-Geneviève has no data. The data is indicative only.
 - **Poteaux de signalisation**: pole geometry. `POTEAU_ID_POT` links poles to signs.
@@ -40,17 +51,19 @@ The city data is CC-BY, so only attribution is needed.
 - **Deploy**: a Docker Compose stack of API, static frontend and a scheduled ETL container. It sits behind the NAS reverse proxy with HTTPS.
 
 ## Phases
-1. **Data**: pull the datasets and inspect the real fields. Check what the geometry looks like and where coverage gaps are.
-2. **Parser**: build the sign-text parser with tests against real distinct strings. Track coverage and unparsed strings.
-3. **API and map**: viewport query, "park now" colouring and a time scrubber.
-4. **Auth and deploy**: login, Docker Compose, reverse proxy, scheduled refresh.
-5. **Extras**: paid spaces, temporary restrictions, saving my own parking spots.
+1. **Data**: pull the datasets and inspect the real fields. Check what the geometry looks like and where coverage gaps are. Details are in `docs/DATA.md`.
+2. **Curb-side spike**: pick a street centreline source (the city's road network dataset or OpenStreetMap; to be chosen after looking at both). Snap poles to streets and work out the side from `FLECHE_PAN`. Check it by eye on a few known streets. If it works, continue; if not, fall back to showing each pole's signs without a side.
+3. **Parser**: build the sign-text parser with tests against real distinct strings. Track coverage and unparsed strings.
+4. **Status engine**: per curb segment and time, compute free, paid (with cost), time-limited or not allowed, plus the next change time. Join the paid-parking tariffs.
+5. **API and map**: viewport query, curb colouring, time scrubber and the type filters.
+6. **Drive mode**: a phone-friendly page (installable web app) that follows GPS and shows the two sides of the current street, large and glanceable.
+7. **Auth and deploy**: login, Docker Compose, reverse proxy, scheduled refresh.
+8. **Extras**: temporary restrictions (roadwork notices), saving my own parking spots.
 
 ## Open questions
 1. Which NAS and container manager do you use (Synology, Unraid, TrueNAS, other)? Do you already run a reverse proxy or SSO?
 2. Is this just for you, or will other people log in?
-3. Is the goal "show all the city's signs", "can I park here now", or "remember where I parked"? Your wording says the first, but the answer changes the design.
-4. Do you want me to contact the mtl-park-map and parkMTL authors about licences, or should we just reimplement from scratch?
+3. Do you want me to contact the mtl-park-map and parkMTL authors about licences, or should we just reimplement from scratch?
 
 ## Caveats
 - I couldn't reach donnees.montreal.ca from this sandbox, so the field names and resource URLs above come from the project READMEs, not from the dataset itself. Step 1 verifies them.
