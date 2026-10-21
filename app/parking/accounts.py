@@ -25,6 +25,8 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from cryptography.fernet import Fernet, InvalidToken
 
+from . import passkeys
+
 MIN_PASSWORD_LENGTH = 12
 ISSUER = "Montreal Parking"
 SESSION_MAX_DAYS = 30
@@ -45,6 +47,10 @@ CREATE TABLE IF NOT EXISTS sessions(
   id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   token_hash TEXT UNIQUE NOT NULL, device TEXT NOT NULL, created_at REAL NOT NULL,
   last_seen REAL NOT NULL, revoked_at REAL);
+CREATE TABLE IF NOT EXISTS passkeys(
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  credential_id TEXT NOT NULL UNIQUE, public_key BLOB NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0,
+  name TEXT NOT NULL, created_at REAL NOT NULL, last_used_at REAL);
 CREATE TABLE IF NOT EXISTS login_log(
   id INTEGER PRIMARY KEY, ts REAL NOT NULL, username TEXT, ip TEXT, device TEXT,
   result TEXT NOT NULL, method TEXT);
@@ -114,6 +120,7 @@ class AuthService:
         self._lock = threading.RLock()
         self._user_limiter = Limiter(clock)
         self._ip_limiter = Limiter(clock, max_failures=20)
+        self.challenges = passkeys.ChallengeStore(clock)
         self.db = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
@@ -251,10 +258,14 @@ class AuthService:
             now = self.clock()
             self._run("UPDATE users SET failed_streak=0, last_sign_in=? WHERE id=?", (now, user["id"]))
             self._log("success", key, ip, device, method)
-            token = secrets.token_urlsafe(32)
-            self._run("INSERT INTO sessions(id, user_id, token_hash, device, created_at, last_seen) VALUES (?,?,?,?,?,?)",
-                      (secrets.token_hex(6), user["id"], _sha256(token), device[:80], now, now))
-            return token
+            return self._open_session(user["id"], device)
+
+    def _open_session(self, user_id, device):
+        now = self.clock()
+        token = secrets.token_urlsafe(32)
+        self._run("INSERT INTO sessions(id, user_id, token_hash, device, created_at, last_seen) VALUES (?,?,?,?,?,?)",
+                  (secrets.token_hex(6), user_id, _sha256(token), device[:80], now, now))
+        return token
 
     def authenticate(self, token):
         """The Session for a live cookie token, else None. Enforces idle timeout and 30-day maximum."""
@@ -290,3 +301,101 @@ class AuthService:
 
     def login_log(self, limit=50):
         return [dict(r) for r in self.db.execute("SELECT * FROM login_log ORDER BY id DESC LIMIT ?", (limit,))]
+
+    # -- passkeys (Face ID) -----------------------------------------------------------
+    def passkeys_for(self, user_id):
+        return [dict(r) for r in self.db.execute(
+            "SELECT id, name, created_at, last_used_at FROM passkeys WHERE user_id=? ORDER BY id", (user_id,))]
+
+    def remove_passkey(self, user_id, passkey_id):
+        return self._run("DELETE FROM passkeys WHERE id=? AND user_id=?", (passkey_id, user_id)) == 1
+
+    def passkey_register_options(self, user_id, host):
+        user = self._one("SELECT id, username FROM users WHERE id=?", (user_id,))
+        if user is None:
+            raise AuthError(401, INVALID)
+        try:
+            rp_id = passkeys.rp_id_for(host)
+        except passkeys.PasskeyError as e:
+            raise AuthError(400, str(e)) from None
+        handle, challenge = self.challenges.issue("register", user_id)
+        existing = [r["credential_id"] for r in self.db.execute(
+            "SELECT credential_id FROM passkeys WHERE user_id=?", (user_id,))]
+        return {"handle": handle, "publicKey": {
+            "rp": {"id": rp_id, "name": ISSUER},
+            "user": {"id": passkeys.b64u(f"user-{user['id']}".encode()), "name": user["username"],
+                     "displayName": user["username"]},
+            "challenge": passkeys.b64u(challenge),
+            "pubKeyCredParams": [{"type": "public-key", "alg": -7}],
+            "authenticatorSelection": {"residentKey": "required", "requireResidentKey": True,
+                                       "userVerification": "required"},
+            "excludeCredentials": [{"type": "public-key", "id": c} for c in existing],
+            "attestation": "none", "timeout": 120000}}
+
+    def passkey_register(self, user_id, handle, name, password, client_data, attestation, host, scheme="https"):
+        """Add a passkey. Needs the password again: a passkey signs in without the authenticator code, so a
+        borrowed browser session must not be enough to make one."""
+        user = self._one("SELECT username, password_hash FROM users WHERE id=?", (user_id,))
+        if user is None:
+            raise AuthError(401, INVALID)
+        with self._lock:
+            self._user_limiter.check(user["username"])
+            if not self._verify_password(user["password_hash"], password):
+                self._user_limiter.failure(user["username"])
+                raise AuthError(400, "Wrong password")
+            self._user_limiter.success(user["username"])
+        try:
+            challenge = self.challenges.take(handle, "register", user_id)
+            cred_id, public_key, count = passkeys.verify_registration(
+                challenge, host, passkeys.unb64u(client_data), passkeys.unb64u(attestation), scheme)
+        except passkeys.PasskeyError as e:
+            raise AuthError(400, str(e)) from None
+        key = passkeys.b64u(cred_id)
+        if self._one("SELECT 1 FROM passkeys WHERE credential_id=?", (key,)):
+            raise AuthError(400, "That passkey is already added")
+        label = "".join(ch for ch in name if ch.isprintable()).strip()[:60] or "This device"
+        now = self.clock()
+        self._run("INSERT INTO passkeys(user_id, credential_id, public_key, sign_count, name, created_at) "
+                  "VALUES (?,?,?,?,?,?)", (user_id, key, public_key, count, label, now))
+        return {"name": label}
+
+    def passkey_login_options(self, host):
+        try:
+            rp_id = passkeys.rp_id_for(host)
+        except passkeys.PasskeyError as e:
+            raise AuthError(400, str(e)) from None
+        handle, challenge = self.challenges.issue("login")
+        return {"handle": handle, "publicKey": {
+            "rpId": rp_id, "challenge": passkeys.b64u(challenge), "userVerification": "required",
+            "allowCredentials": [], "timeout": 120000}}
+
+    def passkey_login(self, handle, credential_id, client_data, authenticator_data, signature, host,
+                      scheme="https", device="", ip="-"):
+        """Returns a session token. Held to the same lock and rate limit as the password path; a bad
+        answer cannot be guessed at, so it is logged and counted by address but never locks a login."""
+        with self._lock:
+            if self._one("SELECT 1 FROM users WHERE locked_at IS NOT NULL"):
+                self._log("locked", None, ip, device, "passkey")
+                raise AuthError(423, LOCKED_MESSAGE)
+            try:
+                self._ip_limiter.check(ip)
+            except AuthError:
+                self._log("rate_limited", None, ip, device, "passkey")
+                raise
+            row = self._one("SELECT p.*, u.username FROM passkeys p JOIN users u ON u.id=p.user_id "
+                            "WHERE p.credential_id=?", (credential_id,))
+            try:
+                if row is None:
+                    raise passkeys.PasskeyError("This passkey is not registered here")
+                challenge = self.challenges.take(handle, "login")
+                count = passkeys.verify_assertion(
+                    challenge, host, bytes(row["public_key"]), row["sign_count"], passkeys.unb64u(client_data),
+                    passkeys.unb64u(authenticator_data), passkeys.unb64u(signature), scheme)
+            except passkeys.PasskeyError as e:
+                self._ip_limiter.failure(ip)
+                self._log("bad_passkey", row["username"] if row else None, ip, device, "passkey")
+                raise AuthError(401, str(e)) from None
+            self._run("UPDATE passkeys SET sign_count=?, last_used_at=? WHERE id=?", (count, self.clock(), row["id"]))
+            self._run("UPDATE users SET failed_streak=0, last_sign_in=? WHERE id=?", (self.clock(), row["user_id"]))
+            self._log("success", row["username"], ip, device, "passkey")
+            return self._open_session(row["user_id"], device)

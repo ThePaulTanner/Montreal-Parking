@@ -56,7 +56,10 @@ checks (columns present, row counts within 10% of the last good run); otherwise 
   is run on the NAS. Every attempt is logged (never the password or code).
 * Each device is its own session. `/account` lists them with Revoke and shows the sign-in log. Sessions end
   after 8 hours without use (`SESSION_IDLE_MINUTES`) or 30 days.
-* Not copied from HomeFinance: passkeys (Face ID) and Plaid, which has nothing to do with parking.
+* **Passkeys (Face ID):** on the Account page, add one per device (it asks for your password again, because a
+  passkey signs in without the authenticator code). The sign-in page then has a "Sign in with Face ID / passkey"
+  button. A passkey sign-in is held to the same lock and logs as a password one.
+* Not copied from HomeFinance: Plaid, which has nothing to do with parking.
 
 ## Run it on a Synology
 See the header of `docker-compose.yml` and `.env.example`. In short: put the project folder on the NAS,
