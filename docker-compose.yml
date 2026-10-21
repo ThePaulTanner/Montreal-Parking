@@ -1,8 +1,8 @@
 # Montreal Parking: Synology NAS deployment (DSM 7.2+, Container Manager)
 #
 # Setup on the NAS:
-#   1. File Station: create /docker/montreal-parking/ with a data/ folder inside it
-#      (it appears as /volume1/docker/montreal-parking/ in the paths below).
+#   1. File Station: create /docker/montreal-parking/ on any volume with a data/ folder inside it
+#      (for example /volume3/docker/montreal-parking/; the data folder is found relative to this file).
 #   2. Put this file, .env (from .env.example) and the api/ and etl/ folders there.
 #   3. Container Manager > Project > Create: set the path to that folder, choose
 #      "Use existing docker-compose.yml", and build.
@@ -42,7 +42,7 @@ services:
       HTTP_USER_AGENT: ${HTTP_USER_AGENT:-Mozilla/5.0 (compatible; mtl-parking/1.0)}
       MIN_ROWS_RATIO: "0.9" # reject a download with <90% of the last good run's rows
     volumes:
-      - ${DATA_PATH:-/volume1/docker/montreal-parking/data}:/data
+      - ${DATA_PATH:-./data}:/data
     healthcheck:
       # healthy while the last successful run is under 36h old
       test: ["CMD-SHELL", "test -n \"$(find /data/current/.ok -mmin -2160 2>/dev/null)\""]
@@ -67,7 +67,7 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
       COOKIE_SECURE: ${COOKIE_SECURE:-true} # true when served over HTTPS
     volumes:
-      - ${DATA_PATH:-/volume1/docker/montreal-parking/data}:/data:ro
+      - ${DATA_PATH:-./data}:/data:ro
     ports:
       # Only the app is exposed. Put your NAS reverse proxy (HTTPS) in front of it.
       # Bound to the LAN port below; change the left side if 8480 is taken.
