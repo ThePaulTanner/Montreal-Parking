@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Montreal Parking</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+:root{
+  --bg:#f5f6f8; --fg:#1c2230; --muted:#5b6475; --card:#ffffff; --line:#d9dde5; --accent:#1d5fd1;
+  --free:#2e9e4f; --limited:#19a7c4; --paid:#3b6fd8; --permit:#8e54c9; --reserved:#e8851a;
+  --no_parking:#d63a3a; --no_stopping:#7a1020; --unknown:#8a8f99;
+  --shadow:0 2px 10px rgba(0,0,0,.18);
+}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#12151c; --fg:#e8ebf2; --muted:#9aa3b5; --card:#1b2030; --line:#2e3548; --accent:#6aa0ff;
+  --free:#4cc16f; --limited:#3cc3e0; --paid:#6f9aff; --permit:#b585ee; --reserved:#f5a04a;
+  --no_parking:#ff6b6b; --no_stopping:#d6455d; --unknown:#9aa0ab; --shadow:0 2px 10px rgba(0,0,0,.5);}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.35 system-ui,-apple-system,Segoe UI,sans-serif;display:flex;flex-direction:column}
+header{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;padding:8px 16px;background:var(--card);border-bottom:1px solid var(--line);z-index:5}
+h1{font-size:16px;margin:0 4px 0 0;font-weight:700}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+button,input[type=datetime-local]{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+button{cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
+.chips{display:flex;gap:6px;overflow-x:auto;padding:0 16px 8px;background:var(--card);border-bottom:1px solid var(--line);z-index:5;scrollbar-width:thin}
+.chip{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;border:1px solid var(--line);border-radius:999px;padding:5px 11px;background:transparent;user-select:none}
+.chip i{width:18px;height:5px;border-radius:3px;background:var(--c);display:inline-block}
+.chip.dash i{background:repeating-linear-gradient(90deg,var(--c) 0 5px,transparent 5px 8px)}
+.chip[aria-pressed=false]{opacity:.45;text-decoration:line-through}
+.chip[aria-pressed=true]{background:var(--card);color:var(--fg);border-color:var(--c)}
+#mapwrap{position:relative;flex:1;min-height:0}
+#map{position:absolute;inset:0}
+#hint{position:absolute;top:10px;left:50%;transform:translateX(-50%);background:var(--card);padding:6px 12px;border-radius:999px;box-shadow:var(--shadow);font-size:13px;z-index:3;display:none;max-width:calc(100% - 32px);text-align:center}
+#sheet{position:absolute;left:0;right:0;bottom:0;z-index:4;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -4px 16px rgba(0,0,0,.18);padding:12px 16px calc(12px + env(safe-area-inset-bottom));display:none;max-height:60%;overflow:auto}
+#sheet .close{position:absolute;right:10px;top:8px;border:0;font-size:20px;line-height:1;padding:4px 8px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.card{border:1px solid var(--line);border-left:8px solid var(--c,var(--unknown));border-radius:10px;padding:10px 12px;background:var(--card)}
+.card .who{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.card .big{font-size:22px;font-weight:700;margin:2px 0}
+.card .sub{color:var(--muted);font-size:14px}
+.card ul{margin:6px 0 0;padding-left:18px;font-size:12px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
+.street{font-weight:700;margin:0 28px 8px 0}
+.foot{font-size:11px;color:var(--muted);padding:4px 16px;background:var(--card);border-top:1px solid var(--line)}
+.maplibregl-ctrl-attrib{font-size:10px}
+@media (max-width:520px){.foot{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Montreal Parking</h1>
+  <div class="row">
+    <button id="nowBtn" class="primary" title="Show parking right now">Now</button>
+    <input id="when" type="datetime-local" aria-label="Show parking at this time">
+    <button id="driveBtn" aria-pressed="false">Drive mode</button>
+  </div>
+  <form method="post" action="/logout" style="margin-left:auto"><button>Sign out</button></form>
+</header>
+<div class="chips" id="chips" role="group" aria-label="Parking types to show"></div>
+<div id="mapwrap">
+  <div id="map"></div>
+  <div id="hint"></div>
+  <div id="sheet"><button class="close" aria-label="Close">×</button><div id="sheetBody"></div></div>
+</div>
+<div class="foot" id="foot">Signs on the street are authoritative. Data: Ville de Montréal, Agence de mobilité durable (CC BY 4.0).</div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+"use strict";
+const TYPES = [
+  {s:"free",        label:"Free"},
+  {s:"limited",     label:"Free, time limit"},
+  {s:"paid",        label:"Paid"},
+  {s:"permit",      label:"Permit only"},
+  {s:"reserved",    label:"Reserved (disabled, EV...)"},
+  {s:"no_parking",  label:"No parking"},
+  {s:"no_stopping", label:"No stopping", dash:true},
+  {s:"unknown",     label:"Check sign"},
+];
+const LABEL = Object.fromEntries(TYPES.map(t => [t.s, t.label]));
+const MIN_ZOOM = 14;
+
+const store = {
+  get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch(e){} },
+};
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const colors = () => Object.fromEntries(TYPES.map(t => [t.s, css("--"+t.s)]));
+
+let active = new Set(JSON.parse(store.get("types") || "null") || TYPES.map(t => t.s));
+let atTime = null;      // null = now
+let drive = false;
+let map, aborter, moveTimer;
+
+/* ---------- chips ---------- */
+const chipsEl = document.getElementById("chips");
+for (const t of TYPES) {
+  const b = document.createElement("button");
+  b.className = "chip" + (t.dash ? " dash" : "");
+  b.style.setProperty("--c", `var(--${t.s})`);
+  b.setAttribute("aria-pressed", active.has(t.s));
+  b.innerHTML = "<i></i>";
+  b.append(t.label);
+  b.onclick = () => {
+    active.has(t.s) ? active.delete(t.s) : active.add(t.s);
+    b.setAttribute("aria-pressed", active.has(t.s));
+    store.set("types", JSON.stringify([...active]));
+    applyFilter();
+  };
+  chipsEl.append(b);
+}
+
+/* ---------- map ---------- */
+map = new maplibregl.Map({
+  container: "map",
+  center: JSON.parse(store.get("view") || "null")?.c || [-73.5673, 45.5017],
+  zoom: JSON.parse(store.get("view") || "null")?.z || 15,
+  style: {
+    version: 8,
+    sources: {osm: {type:"raster", tileSize:256, maxzoom:19,
+      tiles:["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      attribution:"© OpenStreetMap contributors"}},
+    layers: [{id:"osm", type:"raster", source:"osm"}],
+  },
+  attributionControl: {compact: true},
+});
+map.addControl(new maplibregl.NavigationControl({showCompass:false}), "top-right");
+
+function colorExpr() {
+  const c = colors();
+  const e = ["match", ["get","s"]];
+  for (const t of TYPES) e.push(t.s, c[t.s]);
+  e.push(c.unknown);
+  return e;
+}
+function applyFilter() {
+  if (!map.getLayer("curb-solid")) return;
+  const on = [...active];
+  map.setFilter("curb-casing", ["in", ["get","s"], ["literal", on]]);
+  map.setFilter("curb-solid", ["all", ["!=", ["get","s"], "no_stopping"], ["in", ["get","s"], ["literal", on]]]);
+  map.setFilter("curb-dash",  ["all", ["==", ["get","s"], "no_stopping"], ["in", ["get","s"], ["literal", on]]]);
+}
+const width = ["interpolate", ["linear"], ["zoom"], 14, 2, 17, 5, 19, 8];
+
+map.on("load", () => {
+  map.addSource("curbs", {type:"geojson", data:{type:"FeatureCollection", features:[]}});
+  map.addLayer({id:"curb-casing", type:"line", source:"curbs",
+    paint:{"line-color":"#ffffff", "line-opacity":.85, "line-width":["interpolate",["linear"],["zoom"],14,3.5,17,8,19,12]},
+    layout:{"line-cap":"round","line-join":"round"}});
+  map.addLayer({id:"curb-solid", type:"line", source:"curbs",
+    paint:{"line-color":colorExpr(), "line-width":width}, layout:{"line-cap":"round","line-join":"round"}});
+  map.addLayer({id:"curb-dash", type:"line", source:"curbs",
+    paint:{"line-color":colorExpr(), "line-width":width, "line-dasharray":[1.2,1.2]}, layout:{"line-join":"round"}});
+  applyFilter();
+  for (const id of ["curb-solid","curb-dash"]) {
+    map.on("click", id, e => showCurb(e.features[0].properties.i, e.lngLat));
+    map.on("mouseenter", id, () => map.getCanvas().style.cursor = "pointer");
+    map.on("mouseleave", id, () => map.getCanvas().style.cursor = "");
+  }
+  load();
+});
+map.on("moveend", () => {
+  store.set("view", JSON.stringify({c: map.getCenter().toArray(), z: map.getZoom()}));
+  clearTimeout(moveTimer); moveTimer = setTimeout(load, 200);
+});
+
+function isoTime() { return atTime ? new Date(atTime).toISOString() : null; }
+function hint(msg) {
+  const h = document.getElementById("hint");
+  h.style.display = msg ? "block" : "none"; h.textContent = msg || "";
+}
+async function api(path, params) {
+  const q = new URLSearchParams(params);
+  const t = isoTime(); if (t) q.set("t", t);
+  const r = await fetch(path + "?" + q, {credentials:"same-origin", signal: params._signal});
+  if (r.status === 401) { location.href = "/login"; throw new Error("login"); }
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.statusText); }
+  return r.json();
+}
+async function load() {
+  if (!map.getSource("curbs")) return;
+  if (map.getZoom() < MIN_ZOOM) { hint("Zoom in to see the sides of the street"); return; }
+  const b = map.getBounds();
+  aborter?.abort(); aborter = new AbortController();
+  try {
+    const q = new URLSearchParams({west:b.getWest(), south:b.getSouth(), east:b.getEast(), north:b.getNorth()});
+    const t = isoTime(); if (t) q.set("t", t);
+    const r = await fetch("/api/curbs?" + q, {credentials:"same-origin", signal: aborter.signal});
+    if (r.status === 401) { location.href = "/login"; return; }
+    if (!r.ok) { hint((await r.json().catch(() => ({}))).detail || "Could not load"); return; }
+    map.getSource("curbs").setData(await r.json());
+    hint(null);
+  } catch (e) { if (e.name !== "AbortError") hint("Could not load: " + e.message); }
+}
+
+/* ---------- time ---------- */
+const whenEl = document.getElementById("when");
+function setNow() { atTime = null; whenEl.value = ""; load(); if (drive) lastFetch = 0; }
+document.getElementById("nowBtn").onclick = setNow;
+whenEl.onchange = () => { atTime = whenEl.value || null; load(); lastFetch = 0; };
+setInterval(() => { if (!atTime) { load(); lastFetch = 0; } }, 5 * 60 * 1000);
+
+/* ---------- details ---------- */
+const sheet = document.getElementById("sheet"), sheetBody = document.getElementById("sheetBody");
+sheet.querySelector(".close").onclick = () => { sheet.style.display = "none"; if (drive) renderDrive(); };
+
+function fmtUntil(iso) {
+  if (!iso) return "";
+  const d = new Date(iso), now = atTime ? new Date(atTime) : new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const time = d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+  return sameDay ? time : d.toLocaleDateString([], {weekday:"short"}) + " " + time;
+}
+function card(info, who) {
+  const el = document.createElement("div");
+  el.className = "card"; el.style.setProperty("--c", `var(--${info.status})`);
+  const w = document.createElement("div"); w.className = "who"; w.textContent = who; el.append(w);
+  const big = document.createElement("div"); big.className = "big";
+  big.textContent = info.status === "paid" && info.cents != null
+    ? `Paid, $${(info.cents/100).toFixed(2)}/h` : (LABEL[info.status] || info.status);
+  el.append(big);
+  const sub = document.createElement("div"); sub.className = "sub";
+  const bits = [];
+  if (info.status !== "paid" && info.detail && !["Parking allowed","No restriction"].includes(info.detail)) bits.push(info.detail);
+  if (info.status === "paid" && info.limit_min) bits.push(info.limit_min % 60 ? `${info.limit_min} min max` : `${info.limit_min/60} h max`);
+  if (info.until) bits.push(`until ${fmtUntil(info.until)}` + (info.then ? `, then ${(LABEL[info.then.status] || info.then.status).toLowerCase()}` : ""));
+  else if (info.status !== "unknown") bits.push("no change in the next 3 days");
+  sub.textContent = bits.join(" · "); el.append(sub);
+  if (info.signs?.length) {
+    const ul = document.createElement("ul");
+    for (const s of info.signs) { const li = document.createElement("li"); li.textContent = s; ul.append(li); }
+    el.append(ul);
+  }
+  if (!info.poles && !info.bays) { const n = document.createElement("div"); n.className = "sub"; n.textContent = "No sign data here"; el.append(n); }
+  return el;
+}
+async function showCurb(i, lngLat) {
+  try {
+    const info = await api("/api/curb/" + i, {});
+    sheetBody.replaceChildren();
+    const s = document.createElement("div"); s.className = "street"; s.textContent = info.street; sheetBody.append(s);
+    const cards = document.createElement("div"); cards.className = "cards";
+    cards.append(card(info, info.side === "Gauche" ? "Left side of the street as drawn" : "Right side of the street as drawn"));
+    sheetBody.append(cards);
+    sheet.style.display = "block";
+  } catch (e) { hint(e.message); }
+}
+
+/* ---------- drive mode ---------- */
+let watchId = null, me = null, heading = null, lastFetch = 0, lastPos = null, here = null, marker = null;
+const driveBtn = document.getElementById("driveBtn");
+driveBtn.onclick = () => drive ? stopDrive() : startDrive();
+
+function startDrive() {
+  if (!navigator.geolocation) { hint("This browser has no location support"); return; }
+  drive = true; driveBtn.setAttribute("aria-pressed", true);
+  if (!marker) {
+    const dot = document.createElement("div");
+    dot.style.cssText = "width:16px;height:16px;border-radius:50%;background:#1d5fd1;border:3px solid #fff;box-shadow:0 0 0 2px #1d5fd1";
+    marker = new maplibregl.Marker({element: dot});
+  }
+  watchId = navigator.geolocation.watchPosition(onPos, e => hint("Location: " + e.message),
+    {enableHighAccuracy: true, maximumAge: 2000, timeout: 20000});
+  document.getElementById("foot").style.display = "none";
+}
+function stopDrive() {
+  drive = false; driveBtn.setAttribute("aria-pressed", false);
+  if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+  watchId = null; marker?.remove(); sheet.style.display = "none"; here = null;
+  document.getElementById("foot").style.display = "";
+}
+async function onPos(p) {
+  const {latitude: lat, longitude: lon, heading: h, speed} = p.coords;
+  me = [lon, lat];
+  if (h != null && !Number.isNaN(h) && (speed ?? 0) > 1.5) heading = h;
+  marker.setLngLat(me).addTo(map);
+  if (map.getZoom() < 16) map.setZoom(17);
+  map.easeTo({center: me, duration: 500});
+  const moved = !lastPos || Math.hypot((lon-lastPos[0])*79000, (lat-lastPos[1])*111000) > 8;
+  if (Date.now() - lastFetch < 3000 || (!moved && Date.now() - lastFetch < 60000)) return;
+  lastFetch = Date.now(); lastPos = me;
+  try {
+    const params = {lat, lon}; if (heading != null) params.heading = heading;
+    here = await api("/api/here", params);
+  } catch (e) { here = {error: e.message}; }
+  renderDrive();
+}
+function renderDrive() {
+  if (!drive || !here) return;
+  sheetBody.replaceChildren();
+  if (here.error) { sheetBody.textContent = here.error; sheet.style.display = "block"; return; }
+  if (!here.found) { sheetBody.textContent = "No street with parking data within 45 m."; sheet.style.display = "block"; return; }
+  const s = document.createElement("div"); s.className = "street"; s.textContent = here.street; sheetBody.append(s);
+  const cards = document.createElement("div"); cards.className = "cards";
+  const sides = [...here.sides];
+  if (heading != null) sides.sort((a, b) => (a.relative === "left" ? 0 : 1) - (b.relative === "left" ? 0 : 1));
+  sides.forEach((info, k) => {
+    const who = heading != null ? (info.relative === "right" ? "Your right" : "Your left")
+      : (k === 0 ? "Nearest curb" : "Other side");
+    cards.append(card(info, who));
+  });
+  sheetBody.append(cards);
+  if (heading == null) {
+    const n = document.createElement("div"); n.className = "sub"; n.style.marginTop = "8px";
+    n.textContent = "Start moving so I can tell your left from your right."; sheetBody.append(n);
+  }
+  sheet.style.display = "block";
+}
+</script>
+</body>
+</html>

@@ -1,4 +1,6 @@
-"""Download the city + Agence parking data, validate it, and publish it atomically.
+"""Daily data refresh (runs inside the app container as a background thread).
+
+Download the city + Agence parking data, validate it, and publish it atomically.
 
 Layout under DATA_DIR:
   releases/<UTC timestamp>/   one folder per successful run
@@ -12,6 +14,7 @@ import shutil
 import sys
 import time
 import urllib.request
+import zipfile
 
 DATA = os.environ.get("DATA_DIR", "/data")
 UA = os.environ.get("HTTP_USER_AGENT", "Mozilla/5.0 (compatible; mtl-parking/1.0)")
@@ -20,6 +23,7 @@ MIN_RATIO = float(os.environ.get("MIN_ROWS_RATIO", "0.9"))
 KEEP = 3
 
 CKAN = "https://donnees.montreal.ca/api/3/action/package_show?id=stationnement-sur-rue-signalisation-courant"
+GEO_CKAN = "https://donnees.montreal.ca/api/3/action/package_show?id=geobase-double-statique"
 AMD = "https://www.agencemobilitedurable.ca/images/data/{}.csv"
 AMD_FILES = ["Places", "Reglementations", "Periodes", "EmplacementReglementation",
              "ReglementationPeriode", "DateExportation"]
@@ -54,6 +58,30 @@ def previous_rows():
         return None
 
 
+SHP_PARTS = (".shp", ".shx", ".dbf", ".prj", ".cpg")
+
+
+def fetch_geobase(stage):
+    """Download the street-sides shapefile (Géobase double) into stage/gbdouble/."""
+    pkg = json.loads(get(GEO_CKAN))["result"]
+    res = next(r for r in pkg["resources"] if r["format"].upper() == "ZIP")
+    zpath = os.path.join(stage, "gbdouble.zip")
+    get(res["url"], zpath)
+    out = os.path.join(stage, "gbdouble")
+    os.makedirs(out)
+    with zipfile.ZipFile(zpath) as z:
+        for info in z.infolist():
+            name = os.path.basename(info.filename)  # flatten: never trust paths inside the zip
+            if name.lower().endswith(SHP_PARTS):
+                with z.open(info) as src, open(
+                    os.path.join(out, "geobase_double" + os.path.splitext(name)[1].lower()), "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+    os.remove(zpath)
+    if not os.path.exists(os.path.join(out, "geobase_double.shp")):
+        raise RuntimeError("Géobase double zip did not contain a shapefile")
+    return out
+
+
 def run_once():
     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     stage = os.path.join(DATA, "releases", ts + ".partial")
@@ -85,8 +113,17 @@ def run_once():
 
         with open(os.path.join(stage, "DateExportation.csv")) as f:
             amd_date = f.read().split()[-1]
-        manifest = {"built_utc": ts, "sign_rows": rows, "city_last_modified": res.get("last_modified"),
-                    "agence_export_date": amd_date}
+
+        from parking import curbs  # imported here so the downloader stays importable without geo libraries
+        geo = fetch_geobase(stage)
+        built = curbs.build(stage, geo, os.path.join(stage, "curbs.pkl"))
+        shutil.rmtree(geo)
+        n_curbs = len(built["portions"])
+        if n_curbs < 50000:
+            raise RuntimeError(f"only {n_curbs} curb segments were built; expected about 70,000")
+        del built
+        manifest = {"built_utc": ts, "sign_rows": rows, "curb_segments": n_curbs,
+                    "city_last_modified": res.get("last_modified"), "agence_export_date": amd_date}
         with open(os.path.join(stage, "manifest.json"), "w") as f:
             json.dump(manifest, f, indent=2)
         open(os.path.join(stage, ".ok"), "w").close()
@@ -119,16 +156,23 @@ def seconds_until(hhmm):
     return (t - now).total_seconds()
 
 
+def daemon():
+    """Fetch once if there is no data yet, then re-run every day at REFRESH_AT."""
+    os.makedirs(os.path.join(DATA, "releases"), exist_ok=True)
+    try:
+        if not os.path.exists(os.path.join(DATA, "current")):
+            run_once()  # first start: fetch straight away
+        while True:
+            wait = seconds_until(REFRESH_AT)
+            log(f"next run in {wait/3600:.1f}h at {REFRESH_AT}")
+            time.sleep(wait)
+            if not run_once():
+                time.sleep(1800)
+                run_once()  # one retry after 30 minutes
+    except Exception as e:  # never take the web server down with the downloader
+        log("ETL loop crashed:", repr(e))
+
+
 if __name__ == "__main__":
     os.makedirs(os.path.join(DATA, "releases"), exist_ok=True)
-    if "--daemon" not in sys.argv:
-        sys.exit(0 if run_once() else 1)
-    if not os.path.exists(os.path.join(DATA, "current")):
-        run_once()  # first start: fetch straight away
-    while True:
-        wait = seconds_until(REFRESH_AT)
-        log(f"next run in {wait/3600:.1f}h at {REFRESH_AT}")
-        time.sleep(wait)
-        if not run_once():
-            time.sleep(1800)
-            run_once()  # one retry after 30 minutes
+    sys.exit(0 if run_once() else 1)
