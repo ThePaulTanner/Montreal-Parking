@@ -6,8 +6,16 @@
 #   2. Put this file, .env (from .env.example) and the app/ folder there.
 #   3. Container Manager > Project > Create: set the path to that folder, choose
 #      "Use existing docker-compose.yml", and build.
-#   4. Control Panel > Login Portal > Advanced > Reverse Proxy: add a rule from your
-#      HTTPS hostname to http://localhost:8480 (or whatever APP_PORT is).
+#   4. Create your login on the NAS (never through the web):
+#        sudo docker exec -it mtl-parking-app python cli.py create-user --username paul
+#      It prints a QR code for your authenticator app and 10 one-time recovery codes.
+#   5. Put it on your tailnet, same as HomeFinance. The app listens on 127.0.0.1 only, so this is
+#      the only way in:
+#        sudo tailscale serve --bg --https=10000 http://127.0.0.1:8480
+#      then open https://YOUR-NAS.YOUR-TAILNET.ts.net:10000 on a device with Tailscale. (Port 443 is
+#      probably HomeFinance's. On DSM the tailscale command may need its full path; `tailscale serve
+#      --help` is authoritative for the flags on your version.)
+#      Tailscale's HTTPS certificate is what lets the phone allow GPS in drive mode.
 #
 # Images: GitHub Actions builds them on every merge to main and pushes them to
 # ghcr.io (see .github/workflows/images.yml). Watchtower on the NAS can then update
@@ -45,17 +53,17 @@ services:
       # The city portal rejects default HTTP clients, so the downloader sends a browser UA.
       HTTP_USER_AGENT: ${HTTP_USER_AGENT:-Mozilla/5.0 (compatible; mtl-parking/1.0)}
       MIN_ROWS_RATIO: "0.9" # reject a download with <90% of the last good run's rows
-      # Login. Generate the hash and secret as described in .env.example.
-      APP_USER: ${APP_USER:?set APP_USER in .env}
-      APP_PASSWORD_HASH: ${APP_PASSWORD_HASH:?set APP_PASSWORD_HASH in .env}
-      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
-      COOKIE_SECURE: ${COOKIE_SECURE:-true} # true when served over HTTPS
+      # Login: password + authenticator code. APP_SECRET protects stored passwords and authenticator
+      # keys; keep it safe and never change it (existing logins would stop working).
+      APP_SECRET: ${APP_SECRET:?set APP_SECRET in .env}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-480} # sign out after this long without use
+      MAX_FAILED_LOGINS: ${MAX_FAILED_LOGINS:-10} # then locked until cli.py unlock
+      COOKIE_SECURE: ${COOKIE_SECURE:-true} # keep true: Tailscale serves real HTTPS
     volumes:
       - ${DATA_PATH:-./data}:/data
     ports:
-      # Only the app is exposed. Put your NAS reverse proxy (HTTPS) in front of it.
-      # Bound to the LAN port below; change the left side if 8480 is taken.
-      - "${APP_PORT:-8480}:8000"
+      # Loopback only: not reachable from the LAN. Tailscale Serve (step 5 above) is the way in.
+      - "127.0.0.1:${APP_PORT:-8480}:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/healthz', timeout=3)"]
       interval: 1m

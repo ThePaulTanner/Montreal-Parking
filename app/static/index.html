@@ -57,7 +57,8 @@ button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);co
     <input id="when" type="datetime-local" aria-label="Show parking at this time">
     <button id="driveBtn" aria-pressed="false">Drive mode</button>
   </div>
-  <form method="post" action="/logout" style="margin-left:auto"><button>Sign out</button></form>
+  <div class="row" style="margin-left:auto"><a href="/account" style="color:inherit">Account</a>
+    <form method="post" action="/logout"><button>Sign out</button></form></div>
 </header>
 <div class="chips" id="chips" role="group" aria-label="Parking types to show"></div>
 <div id="mapwrap">
