@@ -1,0 +1,77 @@
+# Montreal Parking: NAS deployment
+#
+# STATUS: draft. The images below do not exist yet. Each `build:` path is a
+# folder we still have to write (api/, etl/). Run `cp .env.example .env`, fill it
+# in, then `docker compose up -d --build` once those folders exist.
+#
+# Two long-running services share one data volume:
+#   etl : downloads the city + Agence data every day, parses it, writes /data/current
+#   app : serves the login, the map UI and the API, reading /data/current (read-only)
+
+name: montreal-parking
+
+x-common: &common
+  restart: unless-stopped
+  environment: &common-env
+    TZ: ${TZ:-America/Toronto} # Montréal time, so "now" and the daily refresh are local
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  etl:
+    <<: *common
+    build: ./etl
+    container_name: mtl-parking-etl
+    environment:
+      <<: *common-env
+      REFRESH_AT: ${REFRESH_AT:-05:30} # daily run, a few hours after the city's ~00:10 refresh
+      DATA_DIR: /data
+      # The city portal rejects default HTTP clients, so the fetcher must send a browser UA.
+      HTTP_USER_AGENT: ${HTTP_USER_AGENT:-Mozilla/5.0 (compatible; mtl-parking/1.0)}
+      MIN_ROWS_RATIO: "0.9" # reject a download with <90% of the last good run's rows
+    volumes:
+      - mtl_data:/data
+    healthcheck:
+      # healthy while the last successful run is under 36h old
+      test: ["CMD-SHELL", "test -n \"$(find /data/current/.ok -mmin -2160 2>/dev/null)\""]
+      interval: 1h
+      timeout: 10s
+      start_period: 30m
+      retries: 1
+
+  app:
+    <<: *common
+    build: ./api
+    container_name: mtl-parking-app
+    depends_on:
+      etl:
+        condition: service_started
+    environment:
+      <<: *common-env
+      DATA_DIR: /data
+      # Login. Generate the hash and secret as described in .env.example.
+      APP_USER: ${APP_USER:?set APP_USER in .env}
+      APP_PASSWORD_HASH: ${APP_PASSWORD_HASH:?set APP_PASSWORD_HASH in .env}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true} # true when served over HTTPS
+    volumes:
+      - mtl_data:/data:ro
+    ports:
+      # Only the app is exposed. Put your NAS reverse proxy (HTTPS) in front of it.
+      # Bound to the LAN port below; change the left side if 8480 is taken.
+      - "${APP_PORT:-8480}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/healthz', timeout=3)"]
+      interval: 1m
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  # A named volume avoids NAS file-permission problems. To keep the data in a
+  # visible NAS folder instead, replace with a bind mount, for example:
+  #   - /volume1/docker/montreal-parking/data:/data
+  mtl_data:
