@@ -3,7 +3,7 @@
 # Setup on the NAS:
 #   1. File Station: create /docker/montreal-parking/ on any volume with a data/ folder inside it
 #      (for example /volume3/docker/montreal-parking/; the data folder is found relative to this file).
-#   2. Put this file, .env (from .env.example) and the api/ and etl/ folders there.
+#   2. Put this file, .env (from .env.example) and the app/ folder there.
 #   3. Container Manager > Project > Create: set the path to that folder, choose
 #      "Use existing docker-compose.yml", and build.
 #   4. Control Panel > Login Portal > Advanced > Reverse Proxy: add a rule from your
@@ -15,9 +15,8 @@
 # If the repo is private, the NAS needs a one-time `docker login ghcr.io` with a
 # GitHub token that has read:packages.
 #
-# Two long-running services share one data volume:
-#   etl : downloads the city + Agence data every day, parses it, writes /data/current
-#   app : serves the login, the map UI and the API, reading /data/current (read-only)
+# One container does everything: it serves the login, the map UI and the API, and a
+# background thread downloads the city + Agence data every day into /data/current.
 
 name: montreal-parking
 
@@ -32,50 +31,27 @@ x-common: &common
       max-file: "3"
 
 services:
-  etl:
-    <<: *common
-    image: ${IMAGE_PREFIX:-ghcr.io/thepaultanner/montreal-parking}-etl:${IMAGE_TAG:-latest}
-    build: ./etl # fallback if the image can't be pulled
-    labels:
-      com.centurylinklabs.watchtower.enable: "true"
-    container_name: mtl-parking-etl
-    environment:
-      <<: *common-env
-      REFRESH_AT: ${REFRESH_AT:-05:30} # daily run, a few hours after the city's ~00:10 refresh
-      DATA_DIR: /data
-      # The city portal rejects default HTTP clients, so the fetcher must send a browser UA.
-      HTTP_USER_AGENT: ${HTTP_USER_AGENT:-Mozilla/5.0 (compatible; mtl-parking/1.0)}
-      MIN_ROWS_RATIO: "0.9" # reject a download with <90% of the last good run's rows
-    volumes:
-      - ${DATA_PATH:-./data}:/data
-    healthcheck:
-      # healthy while the last successful run is under 36h old
-      test: ["CMD-SHELL", "test -n \"$(find /data/current/.ok -mmin -2160 2>/dev/null)\""]
-      interval: 1h
-      timeout: 10s
-      start_period: 30m
-      retries: 1
-
   app:
     <<: *common
-    image: ${IMAGE_PREFIX:-ghcr.io/thepaultanner/montreal-parking}-app:${IMAGE_TAG:-latest}
-    build: ./api # fallback if the image can't be pulled
+    image: ${IMAGE:-ghcr.io/thepaultanner/montreal-parking}:${IMAGE_TAG:-latest}
+    build: ./app # fallback if the image can't be pulled
     labels:
       com.centurylinklabs.watchtower.enable: "true"
     container_name: mtl-parking-app
-    depends_on:
-      etl:
-        condition: service_started
     environment:
       <<: *common-env
       DATA_DIR: /data
+      REFRESH_AT: ${REFRESH_AT:-05:30} # daily data refresh, a few hours after the city's ~00:10 update
+      # The city portal rejects default HTTP clients, so the downloader sends a browser UA.
+      HTTP_USER_AGENT: ${HTTP_USER_AGENT:-Mozilla/5.0 (compatible; mtl-parking/1.0)}
+      MIN_ROWS_RATIO: "0.9" # reject a download with <90% of the last good run's rows
       # Login. Generate the hash and secret as described in .env.example.
       APP_USER: ${APP_USER:?set APP_USER in .env}
       APP_PASSWORD_HASH: ${APP_PASSWORD_HASH:?set APP_PASSWORD_HASH in .env}
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
       COOKIE_SECURE: ${COOKIE_SECURE:-true} # true when served over HTTPS
     volumes:
-      - ${DATA_PATH:-./data}:/data:ro
+      - ${DATA_PATH:-./data}:/data
     ports:
       # Only the app is exposed. Put your NAS reverse proxy (HTTPS) in front of it.
       # Bound to the LAN port below; change the left side if 8480 is taken.
@@ -84,5 +60,5 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/healthz', timeout=3)"]
       interval: 1m
       timeout: 5s
-      start_period: 20s
+      start_period: 30m # first start downloads the data
       retries: 3

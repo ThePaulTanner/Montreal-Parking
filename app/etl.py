@@ -1,4 +1,6 @@
-"""Download the city + Agence parking data, validate it, and publish it atomically.
+"""Daily data refresh (runs inside the app container as a background thread).
+
+Download the city + Agence parking data, validate it, and publish it atomically.
 
 Layout under DATA_DIR:
   releases/<UTC timestamp>/   one folder per successful run
@@ -119,16 +121,23 @@ def seconds_until(hhmm):
     return (t - now).total_seconds()
 
 
+def daemon():
+    """Fetch once if there is no data yet, then re-run every day at REFRESH_AT."""
+    os.makedirs(os.path.join(DATA, "releases"), exist_ok=True)
+    try:
+        if not os.path.exists(os.path.join(DATA, "current")):
+            run_once()  # first start: fetch straight away
+        while True:
+            wait = seconds_until(REFRESH_AT)
+            log(f"next run in {wait/3600:.1f}h at {REFRESH_AT}")
+            time.sleep(wait)
+            if not run_once():
+                time.sleep(1800)
+                run_once()  # one retry after 30 minutes
+    except Exception as e:  # never take the web server down with the downloader
+        log("ETL loop crashed:", repr(e))
+
+
 if __name__ == "__main__":
     os.makedirs(os.path.join(DATA, "releases"), exist_ok=True)
-    if "--daemon" not in sys.argv:
-        sys.exit(0 if run_once() else 1)
-    if not os.path.exists(os.path.join(DATA, "current")):
-        run_once()  # first start: fetch straight away
-    while True:
-        wait = seconds_until(REFRESH_AT)
-        log(f"next run in {wait/3600:.1f}h at {REFRESH_AT}")
-        time.sleep(wait)
-        if not run_once():
-            time.sleep(1800)
-            run_once()  # one retry after 30 minutes
+    sys.exit(0 if run_once() else 1)
