@@ -1,4 +1,13 @@
-# Montreal Parking: NAS deployment
+# Montreal Parking: Synology NAS deployment (DSM 7.2+, Container Manager)
+#
+# Setup on the NAS:
+#   1. File Station: create /docker/montreal-parking/ with a data/ folder inside it
+#      (it appears as /volume1/docker/montreal-parking/ in the paths below).
+#   2. Put this file, .env (from .env.example) and the api/ and etl/ folders there.
+#   3. Container Manager > Project > Create: set the path to that folder, choose
+#      "Use existing docker-compose.yml", and build.
+#   4. Control Panel > Login Portal > Advanced > Reverse Proxy: add a rule from your
+#      HTTPS hostname to http://localhost:8480 (or whatever APP_PORT is).
 #
 # STATUS: draft. The images below do not exist yet. Each `build:` path is a
 # folder we still have to write (api/, etl/). Run `cp .env.example .env`, fill it
@@ -33,7 +42,7 @@ services:
       HTTP_USER_AGENT: ${HTTP_USER_AGENT:-Mozilla/5.0 (compatible; mtl-parking/1.0)}
       MIN_ROWS_RATIO: "0.9" # reject a download with <90% of the last good run's rows
     volumes:
-      - mtl_data:/data
+      - ${DATA_PATH:-/volume1/docker/montreal-parking/data}:/data
     healthcheck:
       # healthy while the last successful run is under 36h old
       test: ["CMD-SHELL", "test -n \"$(find /data/current/.ok -mmin -2160 2>/dev/null)\""]
@@ -58,7 +67,7 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
       COOKIE_SECURE: ${COOKIE_SECURE:-true} # true when served over HTTPS
     volumes:
-      - mtl_data:/data:ro
+      - ${DATA_PATH:-/volume1/docker/montreal-parking/data}:/data:ro
     ports:
       # Only the app is exposed. Put your NAS reverse proxy (HTTPS) in front of it.
       # Bound to the LAN port below; change the left side if 8480 is taken.
@@ -69,9 +78,3 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
-
-volumes:
-  # A named volume avoids NAS file-permission problems. To keep the data in a
-  # visible NAS folder instead, replace with a bind mount, for example:
-  #   - /volume1/docker/montreal-parking/data:/data
-  mtl_data:
