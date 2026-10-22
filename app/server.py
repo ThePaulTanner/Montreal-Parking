@@ -371,26 +371,29 @@ def meta(request: Request):
 
 
 @app.get("/api/curbs")
-def curbs(request: Request, west: float, south: float, east: float, north: float, t: str | None = None):
+def curbs(request: Request, west: float, south: float, east: float, north: float, t: str | None = None,
+          stay: int | None = Query(None, ge=5, le=1440), paid: bool = False):
     need_user(request)
     _ready()
     if east - west > 0.12 or north - south > 0.09:
         raise HTTPException(400, "Zoom in to see street sides.")
-    fc = store.viewport(west, south, east, north, local_time(t))
+    fc = store.viewport(west, south, east, north, local_time(t), stay=stay, paid=paid)
     return Response(json.dumps(fc, separators=(",", ":")), media_type="application/json")
 
 
 @app.get("/api/curb/{i}")
-def curb(request: Request, i: int, t: str | None = None):
+def curb(request: Request, i: int, t: str | None = None,
+         stay: int | None = Query(None, ge=5, le=1440), paid: bool = False):
     need_user(request)
     _ready()
     if not 0 <= i < len(store.portions):
         raise HTTPException(404)
-    return store.describe(i, local_time(t))
+    return store.describe(i, local_time(t), stay, paid)
 
 
 @app.get("/api/here")
-def here(request: Request, lat: float, lon: float, heading: float | None = Query(None), t: str | None = None):
+def here(request: Request, lat: float, lon: float, heading: float | None = Query(None), t: str | None = None,
+         stay: int | None = Query(None, ge=5, le=1440), paid: bool = False):
     need_user(request)
     _ready()
-    return store.here(lat, lon, heading, local_time(t))
+    return store.here(lat, lon, heading, local_time(t), stay=stay, paid=paid)

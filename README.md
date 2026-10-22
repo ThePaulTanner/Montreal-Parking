@@ -13,6 +13,13 @@ free, free with a time limit, paid (with the hourly rate), permit holders only, 
 electric vehicles, taxis...), no parking, no stopping (dashed), or "check the sign" when the sign text
 could not be understood. Filter chips show or hide each type. Tapping a curb lists the raw sign texts.
 
+**Find parking:** pick a stay (30 minutes to 24 hours) and, optionally, "include paid". The map then shows
+only curbs where you could park for that whole stay starting now (or at the time you picked): green for free,
+blue for "fits if you pay" (with a rough cost), amber for "check the sign". The check looks ahead through the
+whole stay, so a street-cleaning ban tomorrow morning rules out an overnight stay. A time limit counts only if
+it is at least as long as your stay. In drive mode each side of the street says whether your stay fits, and if
+not, why ("not now: no parking", or "only until 16:00, then no stopping"). The map refreshes as you move.
+
 ## How it works
 ```
 city CSV (signs) ──┐

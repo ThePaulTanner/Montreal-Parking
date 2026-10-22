@@ -155,3 +155,87 @@ def next_change(rules, dt, horizon_hours=72, step_min=15):
                     return u, su
         t = nxt
     return None, None
+
+
+# --- "Can I park here for N minutes starting at T?" ---------------------------------------
+
+GO, GO_PAID, MAYBE, NO = "go", "paid", "maybe", "no"  # stay_check results
+
+
+@dataclass(frozen=True)
+class Fit:
+    result: str                      # go (free the whole stay), paid (fits if you pay), maybe (check sign), no
+    at: datetime | None = None       # when it first stops fitting (None if it never does)
+    status: str = ""                 # what is in force at that moment
+    detail: str = ""
+    cost_cents: int | None = None    # rough cost of the stay when paid
+
+
+def boundaries(rules):
+    """Minutes after midnight at which any rule switches on or off (plus midnight, for days and dates)."""
+    out = {0}
+    for r in rules:
+        for start, end in r.windows:
+            out.add(start % 1440)
+            out.add(end % 1440)
+    return tuple(sorted(out))
+
+
+def _candidates(rules, start, minutes):
+    """The moments to check: the start, and every rule boundary inside the stay. Status can only
+    change at a boundary, so checking these is as good as checking every minute."""
+    end = start + timedelta(minutes=minutes)
+    times = {start}
+    day = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    bs = boundaries(rules)
+    while day < end:
+        for b in bs:
+            t = day + timedelta(minutes=b)
+            if start < t < end:
+                times.add(t)
+        day += timedelta(days=1)
+    return sorted(times)
+
+
+def stay_check(rules, start, minutes, accept_paid=False):
+    """Does a stay of `minutes` starting at `start` fit these rules?
+
+    Free (or free with a time limit at least as long as the stay) fits. Paid fits only when
+    `accept_paid` and its own maximum stay is long enough. Anything else, such as no parking, permit
+    only or a short limit, blocks the stay at the first moment it applies. A time limit is compared
+    with the whole stay (cautious: it may hide a spot where only part of the stay is limited).
+    """
+    start = start.replace(second=0, microsecond=0)
+    result = GO
+    for t in _candidates(rules, start, minutes):
+        s = evaluate(rules, t)
+        if s.status == FREE:
+            continue
+        if s.status == LIMITED and (s.limit_min or 0) >= minutes:
+            continue
+        if s.status == PAID_S and accept_paid and (s.limit_min is None or s.limit_min >= minutes):
+            if result == GO:
+                result = GO_PAID
+            continue
+        if s.status == UNCERTAIN:
+            result = MAYBE if result in (GO, GO_PAID) else result
+            continue
+        return Fit(NO, t, s.status, s.detail)
+    cost = stay_cost(rules, start, minutes) if result == GO_PAID else None
+    return Fit(result, None, "", "", cost)
+
+
+def stay_cost(rules, start, minutes):
+    """Rough cost in cents: the metered rate for each minute the meter is running, capped at a daily maximum."""
+    total, per_day = 0.0, {}
+    for m in range(minutes):
+        t = start + timedelta(minutes=m)
+        s = evaluate(rules, t)
+        if s.status == PAID_S and s.cents:
+            per_day[t.date()] = per_day.get(t.date(), 0.0) + s.cents / 60
+    for day_total in per_day.values():
+        total += day_total
+    caps = [r.max_cents for r in rules if r.kind == PAID and r.max_cents]
+    if caps and len(per_day) == 1:
+        total = min(total, max(caps))
+    return int(round(total))
