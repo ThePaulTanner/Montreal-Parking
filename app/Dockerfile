@@ -3,7 +3,7 @@ ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-COPY etl.py server.py hash_password.py ./
+COPY etl.py server.py cli.py ./
 COPY parking ./parking
 COPY static ./static
 EXPOSE 8000

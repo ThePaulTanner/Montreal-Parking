@@ -6,3 +6,7 @@ shapely==2.2.0
 pyproj==3.8.0
 numpy==2.5.4
 tzdata==2026.5
+argon2-cffi==25.1.0
+pyotp==2.10.0
+qrcode==8.2
+cryptography==50.0.2

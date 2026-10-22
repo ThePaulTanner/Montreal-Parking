@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .rules import evaluate, next_change
+from .rules import GO, GO_PAID, MAYBE, NO, evaluate, next_change, stay_check
 
 TZ = ZoneInfo("America/Toronto")
 CELL = 0.004  # degrees, about 300-450 m
@@ -77,8 +77,12 @@ class Store:
                 yield from self._grid.get((ix, iy), ())
 
     # --- viewport ------------------------------------------------------------------------
-    def viewport(self, west, south, east, north, dt, limit=40000):
-        """GeoJSON-ready features for the curb segments touching the box, with status at `dt`."""
+    def viewport(self, west, south, east, north, dt, limit=40000, stay=None, paid=False):
+        """GeoJSON-ready features for the curb segments touching the box, with status at `dt`.
+
+        With `stay` (minutes) only curbs where a stay of that length starting at `dt` fits are returned,
+        marked go (free the whole time), paid (fits if you pay; only when `paid`) or maybe (check the sign).
+        """
         cache, seen, feats = {}, set(), []
         for i in self._cells(west, south, east, north):
             if i in seen:
@@ -88,10 +92,18 @@ class Store:
             lons, lats = c[0::2], c[1::2]
             if max(lons) < west or min(lons) > east or max(lats) < south or min(lats) > north:
                 continue
-            s = self._status(rid, dt, cache)
-            props = {"i": i, "s": s.status}
-            if s.cents is not None:
-                props["c"] = s.cents
+            if stay:
+                if rid not in cache:
+                    cache[rid] = stay_check(self.rulesets[rid], dt, stay, paid)
+                fit = cache[rid]
+                if fit.result == NO:
+                    continue
+                props = {"i": i, "s": fit.result}
+            else:
+                s = self._status(rid, dt, cache)
+                props = {"i": i, "s": s.status}
+                if s.cents is not None:
+                    props["c"] = s.cents
             feats.append({"type": "Feature", "properties": props,
                           "geometry": {"type": "LineString", "coordinates": list(zip(lons, lats))}})
             if len(feats) >= limit:
@@ -99,12 +111,12 @@ class Store:
         return {"type": "FeatureCollection", "features": feats}
 
     # --- one segment ---------------------------------------------------------------------
-    def describe(self, i, dt):
+    def describe(self, i, dt, stay=None, paid=False):
         name, side, trc, c, rid, npol, nbay = self.portions[i]
         rules = self.rulesets[rid]
         s = evaluate(rules, dt)
         when, nxt = next_change(rules, dt)
-        return {
+        info = {
             "id": i, "street": name, "side": side,
             "status": s.status, "detail": s.detail, "cents": s.cents, "limit_min": s.limit_min,
             "until": when.isoformat() if when else None,
@@ -112,9 +124,14 @@ class Store:
             "signs": sorted({r.text for r in rules if r.text}),
             "poles": npol, "bays": nbay,
         }
+        if stay:
+            f = stay_check(rules, dt, stay, paid)
+            info["fit"] = {"result": f.result, "at": f.at.isoformat() if f.at else None,
+                           "status": f.status, "detail": f.detail, "cost_cents": f.cost_cents}
+        return info
 
     # --- drive mode ----------------------------------------------------------------------
-    def here(self, lat, lon, heading, dt, radius_m=45):
+    def here(self, lat, lon, heading, dt, radius_m=45, stay=None, paid=False):
         """The nearest street segment's two sides, labelled left/right of travel when heading is known."""
         lat0 = lat
         kx = M_LON_EQ * math.cos(math.radians(lat0))
@@ -143,7 +160,7 @@ class Store:
                 sides[side] = (d, i, near)
         out = []
         for side, (d, i, near) in sides.items():
-            info = self.describe(i, dt)
+            info = self.describe(i, dt, stay, paid)
             info["distance_m"] = round(d, 1)
             if heading is not None:
                 hx, hy = math.sin(math.radians(heading)), math.cos(math.radians(heading))

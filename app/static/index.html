@@ -9,14 +9,15 @@
 :root{
   --bg:#f5f6f8; --fg:#1c2230; --muted:#5b6475; --card:#ffffff; --line:#d9dde5; --accent:#1d5fd1;
   --free:#2e9e4f; --limited:#19a7c4; --paid:#3b6fd8; --permit:#8e54c9; --reserved:#e8851a;
-  --no_parking:#d63a3a; --no_stopping:#7a1020; --unknown:#8a8f99;
+  --no_parking:#d63a3a; --no_stopping:#7a1020; --unknown:#8a8f99; --go:#1e9e44; --maybe:#d9a400;
   --shadow:0 2px 10px rgba(0,0,0,.18);
 }
 @media(prefers-color-scheme:dark){:root:not([data-theme="light"]){
   --bg:#12151c; --fg:#e8ebf2; --muted:#9aa3b5; --card:#1b2030; --line:#2e3548; --accent:#6aa0ff;
   --free:#4cc16f; --limited:#3cc3e0; --paid:#6f9aff; --permit:#b585ee; --reserved:#f5a04a;
-  --no_parking:#ff6b6b; --no_stopping:#d6455d; --unknown:#9aa0ab; --shadow:0 2px 10px rgba(0,0,0,.5);}}
+  --no_parking:#ff6b6b; --no_stopping:#d6455d; --unknown:#9aa0ab; --go:#3ddc6e; --maybe:#f2c14e; --shadow:0 2px 10px rgba(0,0,0,.5);}}
 *{box-sizing:border-box}
+[hidden]{display:none !important}
 html,body{height:100%;margin:0}
 body{background:var(--bg);color:var(--fg);font:15px/1.35 system-ui,-apple-system,Segoe UI,sans-serif;display:flex;flex-direction:column}
 header{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;padding:8px 16px;background:var(--card);border-bottom:1px solid var(--line);z-index:5}
@@ -44,6 +45,10 @@ button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);co
 .card .sub{color:var(--muted);font-size:14px}
 .card ul{margin:6px 0 0;padding-left:18px;font-size:12px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
 .street{font-weight:700;margin:0 28px 8px 0}
+.findctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 10px;border:1px solid var(--go);border-radius:10px}
+.findctl select{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:5px 8px}
+.findctl label{display:flex;gap:6px;align-items:center;font-size:14px}
+.card .fit{font-size:20px;font-weight:700;margin:2px 0}
 .foot{font-size:11px;color:var(--muted);padding:4px 16px;background:var(--card);border-top:1px solid var(--line)}
 .maplibregl-ctrl-attrib{font-size:10px}
 @media (max-width:520px){.foot{display:none}}
@@ -56,10 +61,21 @@ button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);co
     <button id="nowBtn" class="primary" title="Show parking right now">Now</button>
     <input id="when" type="datetime-local" aria-label="Show parking at this time">
     <button id="driveBtn" aria-pressed="false">Drive mode</button>
+    <button id="findBtn" aria-pressed="false" title="Show only curbs where you can park for a whole stay">Find parking</button>
+    <div class="findctl" id="findCtl" hidden>
+      <label for="stay">Stay</label><select id="stay"></select>
+      <label><input type="checkbox" id="paid"> include paid</label>
+    </div>
   </div>
-  <form method="post" action="/logout" style="margin-left:auto"><button>Sign out</button></form>
+  <div class="row" style="margin-left:auto"><a href="/account" style="color:inherit">Account</a>
+    <form method="post" action="/logout"><button>Sign out</button></form></div>
 </header>
 <div class="chips" id="chips" role="group" aria-label="Parking types to show"></div>
+<div class="chips" id="findLegend" hidden>
+  <span class="chip" style="--c:var(--go)"><i></i>Free for the whole stay</span>
+  <span class="chip" id="legendPaid" style="--c:var(--paid)" hidden><i></i>Fits if you pay</span>
+  <span class="chip" style="--c:var(--maybe)"><i></i>Check the sign</span>
+</div>
 <div id="mapwrap">
   <div id="map"></div>
   <div id="hint"></div>
@@ -88,7 +104,12 @@ const store = {
   set(k,v){ try { localStorage.setItem(k,v); } catch(e){} },
 };
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-const colors = () => Object.fromEntries(TYPES.map(t => [t.s, css("--"+t.s)]));
+const FIND_STATES = ["go", "maybe"];
+const colors = () => Object.fromEntries([...TYPES.map(t => t.s), ...FIND_STATES].map(k => [k, css("--"+k)]));
+const FIND_OPTS = [[30,"30 min"],[60,"1 hour"],[120,"2 hours"],[180,"3 hours"],[240,"4 hours"],[480,"8 hours"],[720,"12 hours"],[1440,"24 hours"]];
+let find = Object.assign({on:false, minutes:120, paid:false}, JSON.parse(store.get("find") || "null") || {});
+const findLabel = m => (FIND_OPTS.find(o => o[0] === m) || [m, m + " min"])[1];
+const addFind = q => { if (find.on) { q.set("stay", find.minutes); if (find.paid) q.set("paid", "true"); } };
 
 let active = new Set(JSON.parse(store.get("types") || "null") || TYPES.map(t => t.s));
 let atTime = null;      // null = now
@@ -132,12 +153,18 @@ map.addControl(new maplibregl.NavigationControl({showCompass:false}), "top-right
 function colorExpr() {
   const c = colors();
   const e = ["match", ["get","s"]];
-  for (const t of TYPES) e.push(t.s, c[t.s]);
+  for (const k of [...TYPES.map(t => t.s), ...FIND_STATES]) e.push(k, c[k]);
   e.push(c.unknown);
   return e;
 }
 function applyFilter() {
   if (!map.getLayer("curb-solid")) return;
+  if (find.on) {  // the server already returned only curbs that fit; show them all, solid
+    const fit = ["in", ["get","s"], ["literal", ["go", "paid", "maybe"]]];
+    map.setFilter("curb-casing", fit); map.setFilter("curb-solid", fit);
+    map.setFilter("curb-dash", ["==", ["get","s"], "__none__"]);
+    return;
+  }
   const on = [...active];
   map.setFilter("curb-casing", ["in", ["get","s"], ["literal", on]]);
   map.setFilter("curb-solid", ["all", ["!=", ["get","s"], "no_stopping"], ["in", ["get","s"], ["literal", on]]]);
@@ -175,6 +202,7 @@ function hint(msg) {
 async function api(path, params) {
   const q = new URLSearchParams(params);
   const t = isoTime(); if (t) q.set("t", t);
+  addFind(q);
   const r = await fetch(path + "?" + q, {credentials:"same-origin", signal: params._signal});
   if (r.status === 401) { location.href = "/login"; throw new Error("login"); }
   if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.statusText); }
@@ -188,6 +216,7 @@ async function load() {
   try {
     const q = new URLSearchParams({west:b.getWest(), south:b.getSouth(), east:b.getEast(), north:b.getNorth()});
     const t = isoTime(); if (t) q.set("t", t);
+    addFind(q);
     const r = await fetch("/api/curbs?" + q, {credentials:"same-origin", signal: aborter.signal});
     if (r.status === 401) { location.href = "/login"; return; }
     if (!r.ok) { hint((await r.json().catch(() => ({}))).detail || "Could not load"); return; }
@@ -214,21 +243,33 @@ function fmtUntil(iso) {
   const time = d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
   return sameDay ? time : d.toLocaleDateString([], {weekday:"short"}) + " " + time;
 }
+function fitText(f) {
+  const dur = findLabel(find.minutes).toLowerCase();
+  if (f.result === "go") return ["go", `\u2713 Free for ${dur}`];
+  if (f.result === "paid") return ["paid", "\u2713 Fits if you pay" + (f.cost_cents ? `, about $${(f.cost_cents/100).toFixed(2)}` : "")];
+  if (f.result === "maybe") return ["maybe", "? Check the sign"];
+  const detail = (f.detail || "restricted").toLowerCase();
+  const now = atTime ? new Date(atTime) : new Date();
+  const soon = !f.at || new Date(f.at) - now < 90 * 1000;
+  return ["no_parking", soon ? `\u2717 Not now: ${detail}` : `\u2717 Only until ${fmtUntil(f.at)}, then ${detail}`];
+}
 function card(info, who) {
   const el = document.createElement("div");
-  el.className = "card"; el.style.setProperty("--c", `var(--${info.status})`);
+  const fit = info.fit ? fitText(info.fit) : null;
+  el.className = "card"; el.style.setProperty("--c", `var(--${fit ? fit[0] : info.status})`);
   const w = document.createElement("div"); w.className = "who"; w.textContent = who; el.append(w);
-  const big = document.createElement("div"); big.className = "big";
-  big.textContent = info.status === "paid" && info.cents != null
-    ? `Paid, $${(info.cents/100).toFixed(2)}/h` : (LABEL[info.status] || info.status);
+  if (fit) { const f = document.createElement("div"); f.className = "fit"; f.textContent = fit[1]; el.append(f); }
+  const big = document.createElement("div"); big.className = fit ? "sub" : "big";
+  big.textContent = (fit ? "Now: " : "") + (info.status === "paid" && info.cents != null
+    ? `Paid, $${(info.cents/100).toFixed(2)}/h` : (LABEL[info.status] || info.status));
   el.append(big);
   const sub = document.createElement("div"); sub.className = "sub";
   const bits = [];
-  if (info.status !== "paid" && info.detail && !["Parking allowed","No restriction"].includes(info.detail)) bits.push(info.detail);
+  if (!fit && info.status !== "paid" && info.detail && !["Parking allowed","No restriction"].includes(info.detail)) bits.push(info.detail);
   if (info.status === "paid" && info.limit_min) bits.push(info.limit_min % 60 ? `${info.limit_min} min max` : `${info.limit_min/60} h max`);
   if (info.until) bits.push(`until ${fmtUntil(info.until)}` + (info.then ? `, then ${(LABEL[info.then.status] || info.then.status).toLowerCase()}` : ""));
   else if (info.status !== "unknown") bits.push("no change in the next 3 days");
-  sub.textContent = bits.join(" · "); el.append(sub);
+  sub.textContent = bits.join(" \u00b7 "); el.append(sub);
   if (info.signs?.length) {
     const ul = document.createElement("ul");
     for (const s of info.signs) { const li = document.createElement("li"); li.textContent = s; ul.append(li); }
@@ -294,6 +335,11 @@ function renderDrive() {
   if (here.error) { sheetBody.textContent = here.error; sheet.style.display = "block"; return; }
   if (!here.found) { sheetBody.textContent = "No street with parking data within 45 m."; sheet.style.display = "block"; return; }
   const s = document.createElement("div"); s.className = "street"; s.textContent = here.street; sheetBody.append(s);
+  if (find.on) {
+    const h = document.createElement("div"); h.className = "sub"; h.style.marginBottom = "6px";
+    h.textContent = `Looking for ${find.paid ? "" : "free "}parking for ${findLabel(find.minutes).toLowerCase()}`;
+    sheetBody.append(h);
+  }
   const cards = document.createElement("div"); cards.className = "cards";
   const sides = [...here.sides];
   if (heading != null) sides.sort((a, b) => (a.relative === "left" ? 0 : 1) - (b.relative === "left" ? 0 : 1));
@@ -309,6 +355,26 @@ function renderDrive() {
   }
   sheet.style.display = "block";
 }
+
+/* ---------- find parking ---------- */
+const findBtn = document.getElementById("findBtn"), stayEl = document.getElementById("stay"), paidEl = document.getElementById("paid");
+for (const [m, label] of FIND_OPTS) stayEl.add(new Option(label, m));
+function syncFind() {
+  stayEl.value = String(find.minutes); paidEl.checked = find.paid;
+  findBtn.setAttribute("aria-pressed", find.on);
+  document.getElementById("findCtl").hidden = !find.on;
+  document.getElementById("findLegend").hidden = !find.on;
+  document.getElementById("legendPaid").hidden = !find.paid;
+  document.getElementById("chips").hidden = find.on;
+}
+function findChanged() {
+  store.set("find", JSON.stringify(find)); syncFind(); applyFilter();
+  sheet.style.display = "none"; load(); lastFetch = 0; if (drive && me) onPos({coords: {latitude: me[1], longitude: me[0], heading: heading, speed: 0}});
+}
+findBtn.onclick = () => { find.on = !find.on; findChanged(); };
+stayEl.onchange = () => { find.minutes = Number(stayEl.value); findChanged(); };
+paidEl.onchange = () => { find.paid = paidEl.checked; findChanged(); };
+syncFind();
 </script>
 </body>
 </html>
