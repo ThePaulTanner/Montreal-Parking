@@ -6,7 +6,10 @@ import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .rules import GO, GO_PAID, MAYBE, NO, evaluate, next_change, stay_check
+from .rules import GO, GO_PAID, MAYBE, NO, Fit, Status, evaluate, next_change, stay_check
+
+NODATA = "nodata"  # a stretch of curb that no sign or bay claims: the city data says nothing about it
+_NO_DATA_STATUS = Status(NODATA, "No sign data here")
 
 TZ = ZoneInfo("America/Toronto")
 CELL = 0.004  # degrees, about 300-450 m
@@ -92,13 +95,19 @@ class Store:
             lons, lats = c[0::2], c[1::2]
             if max(lons) < west or min(lons) > east or max(lats) < south or min(lats) > north:
                 continue
+            nodata = npol == 0 and nbay == 0
             if stay:
-                if rid not in cache:
-                    cache[rid] = stay_check(self.rulesets[rid], dt, stay, paid)
-                fit = cache[rid]
+                if nodata:
+                    fit = Fit(MAYBE)  # nothing recorded: never offer it as free, ask for a look at the street
+                else:
+                    if rid not in cache:
+                        cache[rid] = stay_check(self.rulesets[rid], dt, stay, paid)
+                    fit = cache[rid]
                 if fit.result == NO:
                     continue
                 props = {"i": i, "s": fit.result}
+            elif nodata:
+                props = {"i": i, "s": NODATA}
             else:
                 s = self._status(rid, dt, cache)
                 props = {"i": i, "s": s.status}
@@ -114,8 +123,9 @@ class Store:
     def describe(self, i, dt, stay=None, paid=False):
         name, side, trc, c, rid, npol, nbay = self.portions[i]
         rules = self.rulesets[rid]
-        s = evaluate(rules, dt)
-        when, nxt = next_change(rules, dt)
+        nodata = npol == 0 and nbay == 0
+        s = _NO_DATA_STATUS if nodata else evaluate(rules, dt)
+        when, nxt = (None, None) if nodata else next_change(rules, dt)
         info = {
             "id": i, "street": name, "side": side,
             "status": s.status, "detail": s.detail, "cents": s.cents, "limit_min": s.limit_min,
@@ -125,7 +135,7 @@ class Store:
             "poles": npol, "bays": nbay,
         }
         if stay:
-            f = stay_check(rules, dt, stay, paid)
+            f = Fit(MAYBE) if nodata else stay_check(rules, dt, stay, paid)
             info["fit"] = {"result": f.result, "at": f.at.isoformat() if f.at else None,
                            "status": f.status, "detail": f.detail, "cost_cents": f.cost_cents}
         return info
