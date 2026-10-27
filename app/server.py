@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from html import escape
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 import etl
@@ -25,6 +25,23 @@ MAX_FAILED = int(os.environ.get("MAX_FAILED_LOGINS", "10"))
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() != "false"
 COOKIE = "mp_session"
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _read_version():
+    try:
+        with open(os.path.join(HERE, "VERSION")) as f:
+            return f.read().strip() or "dev"
+    except OSError:
+        return "dev"
+
+
+def version_text(version, build=""):
+    return f"Version {version}" + (f" (build {build[:7]})" if build else "")
+
+
+VERSION = _read_version()
+BUILD = os.environ.get("BUILD_COMMIT", "")[:7]  # the commit the image was built from, set by the image build
+VERSION_TEXT = version_text(VERSION, BUILD)
 
 store = Store(os.path.join(DATA, "current", "curbs.pkl"))
 accounts: AuthService | None = None
@@ -88,7 +105,7 @@ input{width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--line)
 button{margin-top:18px;width:100%;padding:11px;border:0;border-radius:8px;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
 button.small{width:auto;margin:0;padding:5px 10px;font-size:13px;font-weight:500}
 button.plain{background:transparent;color:var(--accent);border:1px solid var(--line)}
-.err{color:#c0392b;font-size:14px;margin-top:12px}.note{color:var(--muted);font-size:13px;margin-top:12px}
+.err{color:#c0392b;font-size:14px;margin-top:12px}.ok{color:#1e9e44;font-size:14px;margin-top:12px}.note{color:var(--muted);font-size:13px;margin-top:12px}
 table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:6px 4px;border-bottom:1px solid var(--line);text-align:left}
 code{font-family:ui-monospace,Menlo,monospace;font-size:12px}a{color:var(--accent)}
 </style></head><body>"""
@@ -115,7 +132,7 @@ async function passkeySignIn(box) {
       c = await navigator.credentials.get({publicKey: {challenge: b64u.dec(k.challenge), rpId: k.rpId,
         userVerification: k.userVerification, timeout: k.timeout, allowCredentials: []}});
     } catch (e) {
-      throw new Error(e.name === "NotAllowedError" ? "Cancelled, or this device has no passkey here yet. Sign in with your password once, then add one on the Account page." : "Passkey sign-in failed (" + e.name + ")");
+      throw new Error(e.name === "NotAllowedError" ? "Cancelled, or this device has no passkey here yet. Sign in with your password once, then add one on the Settings page." : "Passkey sign-in failed (" + e.name + ")");
     }
     const r = c.response;
     await post("/passkey/login", {handle: o.handle, credential_id: c.id, client_data: b64u.enc(r.clientDataJSON),
@@ -124,9 +141,9 @@ async function passkeySignIn(box) {
   } catch (e) { box.textContent = e.message; }
 }
 async function addPasskey(box, name, password) {
-  box.textContent = "";
+  box.className = "err"; box.textContent = "";
   try {
-    const o = await post("/account/passkey/options"), k = o.publicKey;
+    const o = await post("/settings/passkey/options"), k = o.publicKey;
     let c;
     try {
       c = await navigator.credentials.create({publicKey: {rp: k.rp,
@@ -138,10 +155,12 @@ async function addPasskey(box, name, password) {
     } catch (e) {
       throw new Error(e.name === "InvalidStateError" ? "This device already has a passkey for this site." : e.name === "NotAllowedError" ? "Cancelled." : "Could not make a passkey (" + e.name + ")");
     }
-    await post("/account/passkey", {handle: o.handle, name, password, client_data: b64u.enc(c.response.clientDataJSON),
+    await post("/settings/passkey", {handle: o.handle, name, password, client_data: b64u.enc(c.response.clientDataJSON),
       attestation: b64u.enc(c.response.attestationObject)});
-    location.reload();
-  } catch (e) { box.textContent = e.message; }
+    box.className = "ok";
+    box.textContent = "Passkey added. Next time, tap \\"Sign in with Face ID / passkey\\" on the sign-in page.";
+    setTimeout(() => location.reload(), 1800);
+  } catch (e) { box.className = "err"; box.textContent = e.message; }
 }
 </script>"""
 
@@ -260,8 +279,8 @@ def passkey_login(body: AssertionBody, request: Request):
     return resp
 
 
-@app.post("/account/passkey/options")
-def account_passkey_options(request: Request):
+@app.post("/settings/passkey/options")
+def settings_passkey_options(request: Request):
     need_xhr(request)
     me = user_of(request)
     if not me:
@@ -272,8 +291,8 @@ def account_passkey_options(request: Request):
         failing(e)
 
 
-@app.post("/account/passkey", status_code=201)
-def account_passkey_add(body: PasskeyAddBody, request: Request):
+@app.post("/settings/passkey", status_code=201)
+def settings_passkey_add(body: PasskeyAddBody, request: Request):
     need_xhr(request)
     me = user_of(request)
     if not me:
@@ -285,62 +304,79 @@ def account_passkey_add(body: PasskeyAddBody, request: Request):
         failing(e)
 
 
-@app.post("/account/passkey/{passkey_id}/delete")
-def account_passkey_delete(request: Request, passkey_id: int):
+@app.post("/settings/passkey/{passkey_id}/delete")
+def settings_passkey_delete(request: Request, passkey_id: int):
     me = user_of(request)
     if not me:
         return RedirectResponse("/login", status_code=303)
     accounts.remove_passkey(me.user_id, passkey_id)
-    return RedirectResponse("/account", status_code=303)
+    return RedirectResponse("/settings", status_code=303)
 
 
-@app.get("/account", response_class=HTMLResponse)
-def account(request: Request):
+@app.get("/account")
+def account_moved():
+    return RedirectResponse("/settings", status_code=303)
+
+
+SETTINGS_SCRIPT = """<script>
+const pkAdd = document.getElementById("pkAdd"), pkNo = document.getElementById("pkNo");
+if (window.PublicKeyCredential && navigator.credentials && window.isSecureContext) {
+  pkAdd.hidden = false;
+  const ua = navigator.userAgent;
+  document.getElementById("pkName").value = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android phone" : /Macintosh/.test(ua) ? "Mac" : "This device";
+  document.getElementById("pkBtn").onclick = () => addPasskey(document.getElementById("pkMsg"),
+    document.getElementById("pkName").value, document.getElementById("pkPw").value);
+} else {
+  pkNo.hidden = false;
+  pkNo.textContent = window.isSecureContext
+    ? "This browser cannot make passkeys."
+    : "Passkeys need the secure (https) address. You opened this page over plain http, so open it through your Tailscale address instead.";
+}
+</script></body></html>"""
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings(request: Request):
     me = user_of(request)
     if not me:
         return RedirectResponse("/login", status_code=303)
-    rows = "".join(
-        f"<tr><td>{escape(s['device'])}{' (this device)' if s['id'] == me.id else ''}</td><td>{_when(s['last_seen'])}</td>"
-        f"<td>{'' if s['id'] == me.id else f'<form method=post action=/account/revoke/{s['id']}><button class=\'small plain\'>Revoke</button></form>'}</td></tr>"
-        for s in accounts.sessions(me.user_id))
-    pk_rows = "".join(
+    keys = accounts.passkeys_for(me.user_id)
+    pk_table = ("<table><tr><th>Passkey</th><th>Last used</th><th></th></tr>" + "".join(
         f"<tr><td>{escape(p['name'])}</td><td>{_when(p['last_used_at'])}</td>"
-        f"<td><form method=post action=/account/passkey/{p['id']}/delete><button class='small plain'>Remove</button></form></td></tr>"
-        for p in accounts.passkeys_for(me.user_id))
+        f"<td><form method=post action=/settings/passkey/{p['id']}/delete><button class='small plain'>Remove</button></form></td></tr>"
+        for p in keys) + "</table>") if keys else '<p class="note">No passkeys yet.</p>'
+    devices = "".join(
+        f"<tr><td>{escape(s['device'])}{' (this device)' if s['id'] == me.id else ''}</td><td>{_when(s['last_seen'])}</td>"
+        f"<td>{'' if s['id'] == me.id else f'<form method=post action=/settings/revoke/{s['id']}><button class=\'small plain\'>Revoke</button></form>'}</td></tr>"
+        for s in accounts.sessions(me.user_id))
     log = "".join(
         f"<tr><td>{_when(r['ts'])}</td><td>{escape(r['result'])}</td><td>{escape(r['username'] or '-')}</td><td>{escape(r['device'] or '')}</td></tr>"
         for r in accounts.login_log(25))
-    return HTMLResponse(PAGE_HEAD + f"""<main><h1>Account: {escape(me.username)}</h1>
-<p><a href="/">Back to the map</a></p>
-<h2>Signed-in devices</h2><table><tr><th>Device</th><th>Last used</th><th></th></tr>{rows}</table>
-<h2>Passkeys (Face ID)</h2>
-<table><tr><th>Name</th><th>Last used</th><th></th></tr>{pk_rows}</table>
+    return HTMLResponse(PAGE_HEAD + f"""<main><h1>Settings</h1>
+<div class="note">{escape(VERSION_TEXT)}</div>
+<p><a href="/">Back to the map</a> &middot; signed in as <b>{escape(me.username)}</b></p>
+<h2>Passkey (Face ID)</h2>
+<p class="note">A passkey lets this phone or computer sign in with Face ID or Touch ID, with no password or authenticator code to type.
+Set one up on each device you use. Adding one asks for your password once, because a passkey skips the authenticator code.</p>
+{pk_table}
 <div id="pkAdd" hidden>
 <label for="pkName">Name for this device</label><input id="pkName" value="">
-<label for="pkPw">Your password (a passkey skips the authenticator code, so it is asked again)</label>
-<input id="pkPw" type="password" autocomplete="current-password">
-<button type="button" class="plain" id="pkBtn">Add a passkey on this device</button>
-<div class="err" id="pkErr"></div></div>
+<label for="pkPw">Your password</label><input id="pkPw" type="password" autocomplete="current-password">
+<button type="button" id="pkBtn">Set up a passkey on this device</button></div>
+<div class="note err" id="pkNo" hidden></div><div class="err" id="pkMsg"></div>
+<h2>Signed-in devices</h2><table><tr><th>Device</th><th>Last used</th><th></th></tr>{devices}</table>
 <h2>Recent sign-in attempts</h2><table><tr><th>When</th><th>Result</th><th>User</th><th>Device</th></tr>{log}</table>
 <form method="post" action="/logout"><button class="plain">Sign out</button></form>
-<p class="note">Logins are added and unlocked on the NAS with <code>cli.py</code>.</p></main>""" + PASSKEY_JS + """<script>
-if (window.PublicKeyCredential && navigator.credentials) {
-  document.getElementById("pkAdd").hidden = false;
-  const ua = navigator.userAgent;
-  document.getElementById("pkName").value = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android phone" : /Macintosh/.test(ua) ? "Mac" : "This device";
-  document.getElementById("pkBtn").onclick = () => addPasskey(document.getElementById("pkErr"),
-    document.getElementById("pkName").value, document.getElementById("pkPw").value);
-}
-</script></body></html>""")
+<p class="note">Logins are added and unlocked on the NAS with <code>cli.py</code>.</p></main>""" + PASSKEY_JS + SETTINGS_SCRIPT)
 
 
-@app.post("/account/revoke/{session_id}")
-def account_revoke(request: Request, session_id: str):
+@app.post("/settings/revoke/{session_id}")
+def settings_revoke(request: Request, session_id: str):
     me = user_of(request)
     if not me:
         return RedirectResponse("/login", status_code=303)
     accounts.revoke(me.user_id, session_id)
-    return RedirectResponse("/account", status_code=303)
+    return RedirectResponse("/settings", status_code=303)
 
 
 # --- app (login required) --------------------------------------------------------------
@@ -348,7 +384,15 @@ def account_revoke(request: Request, session_id: str):
 def index(request: Request):
     if not user_of(request):
         return RedirectResponse("/login", status_code=303)
-    return FileResponse(os.path.join(HERE, "static", "index.html"), headers={"Cache-Control": "no-cache"})
+    with open(os.path.join(HERE, "static", "index.html"), encoding="utf-8") as f:
+        html = f.read().replace("__VERSION__", escape(VERSION_TEXT))
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/version")
+def version(request: Request):
+    need_user(request)
+    return {"version": VERSION, "build": BUILD or None}
 
 
 def _ready():
