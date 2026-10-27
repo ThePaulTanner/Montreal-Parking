@@ -96,3 +96,22 @@ def test_every_page_script_is_valid_javascript(client, anon, path):
         out = subprocess.run(["node", "-e", "new Function(require('fs').readFileSync(0,'utf8'))"],
                              input=src, text=True, capture_output=True)
         assert out.returncode == 0, f"{path} script {i}: {out.stderr[:300]}"
+
+
+def test_the_map_page_is_a_full_screen_map_with_floating_controls(client):
+    html = client.get("/").text
+    assert "<header" not in html                                     # no bar above the map any more
+    assert html.index('<div id="map">') < html.index('<div id="top">')  # the map is the page; controls come on top
+    for ident in ("menuBtn", "timeChip", "findBtn", "chips", "findLegend", "findCtl", "driveBtn", "sheet", "hint"):
+        assert f'id="{ident}"' in html, ident
+    menu = html[html.index('id="menu"'):html.index('id="fabs"')]
+    assert 'href="/settings"' in menu and 'action="/logout"' in menu    # Settings and Sign out live in the menu
+    assert html.index('id="driveBtn"') > html.index('id="fabs"')       # the drive button floats bottom-right
+
+
+def test_every_element_the_script_looks_up_exists(client):
+    html = client.get("/").text
+    script = html.split("<script>")[-1]
+    wanted = set(re.findall(r'getElementById\("([^"]+)"\)', script))
+    missing = [w for w in wanted if f'id="{w}"' not in html]
+    assert not missing, missing

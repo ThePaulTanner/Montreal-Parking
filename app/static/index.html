@@ -10,81 +10,124 @@
   --bg:#f5f6f8; --fg:#1c2230; --muted:#5b6475; --card:#ffffff; --line:#d9dde5; --accent:#1d5fd1;
   --free:#2e9e4f; --limited:#19a7c4; --paid:#3b6fd8; --permit:#8e54c9; --reserved:#e8851a;
   --no_parking:#d63a3a; --no_stopping:#7a1020; --unknown:#8a8f99; --go:#1e9e44; --maybe:#d9a400; --nodata:#9aa3b2;
-  --shadow:0 2px 10px rgba(0,0,0,.18);
+  --shadow:0 2px 8px rgba(0,0,0,.22),0 1px 2px rgba(0,0,0,.12);
+  --sheet-h:0px; --fab-lift:var(--sheet-h);
 }
 @media(prefers-color-scheme:dark){:root:not([data-theme="light"]){
   --bg:#12151c; --fg:#e8ebf2; --muted:#9aa3b5; --card:#1b2030; --line:#2e3548; --accent:#6aa0ff;
   --free:#4cc16f; --limited:#3cc3e0; --paid:#6f9aff; --permit:#b585ee; --reserved:#f5a04a;
-  --no_parking:#ff6b6b; --no_stopping:#d6455d; --unknown:#9aa0ab; --go:#3ddc6e; --maybe:#f2c14e; --nodata:#7d8799; --shadow:0 2px 10px rgba(0,0,0,.5);}}
+  --no_parking:#ff6b6b; --no_stopping:#d6455d; --unknown:#9aa0ab; --go:#3ddc6e; --maybe:#f2c14e; --nodata:#7d8799; --shadow:0 2px 10px rgba(0,0,0,.55);}}
 *{box-sizing:border-box}
 [hidden]{display:none !important}
-html,body{height:100%;margin:0}
-body{background:var(--bg);color:var(--fg);font:15px/1.35 system-ui,-apple-system,Segoe UI,sans-serif;display:flex;flex-direction:column}
-header{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;padding:8px 16px;background:var(--card);border-bottom:1px solid var(--line);z-index:5}
-h1{font-size:16px;margin:0;font-weight:700}
-.brand{margin-right:4px}
-.ver{font-size:11px;color:var(--muted);line-height:1.2}
-.btn{display:inline-block;font:inherit;color:inherit;text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:6px 10px}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-button,input[type=datetime-local]{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+html,body{height:100%;margin:0;overflow:hidden}
+body{background:var(--bg);color:var(--fg);font:15px/1.35 system-ui,-apple-system,Segoe UI,sans-serif}
+button,input,select{font:inherit;color:inherit}
 button{cursor:pointer}
-button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
-button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
-.chips{display:flex;gap:6px;overflow-x:auto;padding:0 16px 8px;background:var(--card);border-bottom:1px solid var(--line);z-index:5;scrollbar-width:thin}
-.chip{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;border:1px solid var(--line);border-radius:999px;padding:5px 11px;background:transparent;user-select:none}
+a{color:var(--accent)}
+
+/* the map fills the screen; everything else floats on top of it */
+#map{position:fixed;inset:0}
+#top{position:fixed;z-index:5;top:max(10px,env(safe-area-inset-top));left:0;right:0;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+#top>*{pointer-events:auto}
+@media(min-width:700px){#top{right:auto;width:min(600px,calc(100vw - 24px))}}
+
+.pill{margin:0 12px;display:flex;align-items:center;gap:8px;padding:5px 18px 5px 5px;border-radius:999px;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow)}
+.icon{width:42px;height:42px;border:0;border-radius:50%;background:transparent;display:grid;place-items:center}
+.icon:hover{background:rgba(127,127,127,.16)}
+svg.i{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+h1{font-size:16px;margin:0;font-weight:700}
+.ver{font-size:11px;color:var(--muted);line-height:1.15}
+
+.rail{display:flex;gap:8px;overflow-x:auto;padding:2px 12px 8px;scrollbar-width:none;pointer-events:none}
+.rail::-webkit-scrollbar{display:none}
+#chips,#findLegend{display:contents}
+.chip{flex:none;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;border:1px solid var(--line);border-radius:999px;padding:7px 13px;background:var(--card);box-shadow:var(--shadow);user-select:none;font-size:14px;pointer-events:auto}
+.chip svg.i{width:16px;height:16px}
 .chip i{width:18px;height:5px;border-radius:3px;background:var(--c);display:inline-block}
 .chip.dash i{background:repeating-linear-gradient(90deg,var(--c) 0 5px,transparent 5px 8px)}
-.chip[aria-pressed=false]{opacity:.45;text-decoration:line-through}
-.chip[aria-pressed=true]{background:var(--card);color:var(--fg);border-color:var(--c)}
-#mapwrap{position:relative;flex:1;min-height:0}
-#map{position:absolute;inset:0}
-#hint{position:absolute;top:10px;left:50%;transform:translateX(-50%);background:var(--card);padding:6px 12px;border-radius:999px;box-shadow:var(--shadow);font-size:13px;z-index:3;display:none;max-width:calc(100% - 32px);text-align:center}
-#sheet{position:absolute;left:0;right:0;bottom:0;z-index:4;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -4px 16px rgba(0,0,0,.18);padding:12px 16px calc(12px + env(safe-area-inset-bottom));display:none;max-height:60%;overflow:auto}
-#sheet .close{position:absolute;right:10px;top:8px;border:0;font-size:20px;line-height:1;padding:4px 8px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
-.card{border:1px solid var(--line);border-left:8px solid var(--c,var(--unknown));border-radius:10px;padding:10px 12px;background:var(--card)}
+.chip[aria-pressed=false]{opacity:.62}
+.chip[aria-pressed=false] i{filter:grayscale(1)}
+.chip[aria-pressed=true]{border-color:var(--c)}
+.chip.tool{--c:var(--accent);opacity:1}
+.chip.tool[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
+
+.panel{margin:0 12px;padding:10px 12px;border-radius:14px;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow)}
+#timePop{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+#timePop label{font-size:14px}
+input[type=datetime-local],select{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+button.primary{background:var(--accent);border:1px solid var(--accent);color:#fff;font-weight:600;border-radius:8px;padding:6px 12px}
+.findctl{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-color:var(--go)}
+.findctl label{display:flex;gap:6px;align-items:center;font-size:14px}
+#hint{display:none;margin:0 12px;align-self:flex-start;background:var(--card);padding:6px 12px;border-radius:999px;box-shadow:var(--shadow);font-size:13px;max-width:calc(100% - 24px)}
+
+#menu{position:fixed;z-index:8;top:calc(max(10px,env(safe-area-inset-top)) + 56px);left:12px;width:220px;padding:6px;margin:0}
+#menu a,#menu button{display:block;width:100%;text-align:left;padding:10px 12px;border:0;border-radius:10px;background:transparent;color:inherit;text-decoration:none;font-size:15px}
+#menu a:hover,#menu button:hover{background:rgba(127,127,127,.16)}
+#menu form{margin:0}
+
+#fabs{position:fixed;z-index:5;right:12px;bottom:calc(var(--fab-lift) + 16px + env(safe-area-inset-bottom));display:flex;flex-direction:column;align-items:flex-end;gap:10px}
+#driveBtn{display:inline-flex;align-items:center;gap:8px;padding:13px 20px;border:0;border-radius:999px;background:var(--accent);color:#fff;font-weight:700;box-shadow:var(--shadow)}
+#driveBtn svg.i{fill:currentColor;stroke:none}
+#driveBtn[aria-pressed=true]{background:#c0392b}
+
+#sheet{position:fixed;z-index:6;left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom));display:none;max-height:55vh;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:14px 14px 12px}
+#sheet .close{position:absolute;right:8px;top:6px;border:0;background:transparent;font-size:22px;line-height:1;padding:4px 8px}
+@media(min-width:700px){#sheet{left:12px;right:auto;width:460px;bottom:12px}:root{--fab-lift:0px}}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.card{border:1px solid var(--line);border-left:8px solid var(--c,var(--unknown));border-radius:12px;padding:10px 12px;background:var(--card)}
 .card .who{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 .card .big{font-size:22px;font-weight:700;margin:2px 0}
+.card .fit{font-size:20px;font-weight:700;margin:2px 0}
 .card .sub{color:var(--muted);font-size:14px}
 .card ul{margin:6px 0 0;padding-left:18px;font-size:12px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
 .street{font-weight:700;margin:0 28px 8px 0}
-.findctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 10px;border:1px solid var(--go);border-radius:10px}
-.findctl select{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:5px 8px}
-.findctl label{display:flex;gap:6px;align-items:center;font-size:14px}
-.card .fit{font-size:20px;font-weight:700;margin:2px 0}
-.foot{font-size:11px;color:var(--muted);padding:4px 16px;background:var(--card);border-top:1px solid var(--line)}
+
+/* map controls sit above the drive button / details card */
+.maplibregl-ctrl-bottom-right{bottom:calc(var(--fab-lift) + 78px + env(safe-area-inset-bottom))}
+.maplibregl-ctrl-bottom-left{bottom:var(--sheet-h)}
 .maplibregl-ctrl-attrib{font-size:10px}
-@media (max-width:520px){.foot{display:none}}
 </style>
 </head>
 <body>
-<header>
-  <div class="brand"><h1>Montreal Parking</h1><div class="ver">__VERSION__</div></div>
-  <div class="row">
-    <button id="nowBtn" class="primary" title="Show parking right now">Now</button>
-    <input id="when" type="datetime-local" aria-label="Show parking at this time">
-    <button id="driveBtn" aria-pressed="false">Drive mode</button>
-    <button id="findBtn" aria-pressed="false" title="Show only curbs where you can park for a whole stay">Find parking</button>
-    <div class="findctl" id="findCtl" hidden>
-      <label for="stay">Stay</label><select id="stay"></select>
-      <label><input type="checkbox" id="paid"> include paid</label>
-    </div>
+<div id="map"></div>
+
+<div id="top">
+  <div class="pill">
+    <button id="menuBtn" class="icon" aria-label="Menu" aria-expanded="false"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    <div class="brand"><h1>Montreal Parking</h1><div class="ver">__VERSION__</div></div>
   </div>
-  <div class="row" style="margin-left:auto"><a href="/settings" class="btn">Settings</a>
-    <form method="post" action="/logout"><button>Sign out</button></form></div>
-</header>
-<div class="chips" id="chips" role="group" aria-label="Parking types to show"></div>
-<div class="chips" id="findLegend" hidden>
-  <span class="chip" style="--c:var(--go)"><i></i>Free for the whole stay</span>
-  <span class="chip" id="legendPaid" style="--c:var(--paid)" hidden><i></i>Fits if you pay</span>
-  <span class="chip" style="--c:var(--maybe)"><i></i>Check the sign</span>
-</div>
-<div id="mapwrap">
-  <div id="map"></div>
+  <div class="rail" id="rail">
+    <button class="chip tool" id="timeChip" aria-label="Choose the time to show"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>Now</span></button>
+    <button class="chip tool" id="findBtn" aria-pressed="false" title="Show only curbs where you can park for a whole stay">Find parking</button>
+    <span id="chips" role="group" aria-label="Parking types to show"></span>
+    <span id="findLegend" hidden>
+      <span class="chip" style="--c:var(--go)"><i></i>Free for the whole stay</span>
+      <span class="chip" id="legendPaid" style="--c:var(--paid)" hidden><i></i>Fits if you pay</span>
+      <span class="chip" style="--c:var(--maybe)"><i></i>Check the sign</span>
+    </span>
+  </div>
+  <div class="panel" id="timePop" hidden>
+    <label for="when">Show parking at</label>
+    <input id="when" type="datetime-local">
+    <button id="nowBtn" class="primary" title="Show parking right now">Now</button>
+  </div>
+  <div class="panel findctl" id="findCtl" hidden>
+    <label for="stay">Stay</label><select id="stay"></select>
+    <label><input type="checkbox" id="paid"> include paid</label>
+  </div>
   <div id="hint"></div>
-  <div id="sheet"><button class="close" aria-label="Close">×</button><div id="sheetBody"></div></div>
 </div>
-<div class="foot" id="foot">Signs on the street are authoritative. Data: Ville de Montréal, Agence de mobilité durable (CC BY 4.0).</div>
+
+<div class="panel" id="menu" hidden>
+  <a href="/settings">Settings</a>
+  <form method="post" action="/logout"><button>Sign out</button></form>
+</div>
+
+<div id="fabs">
+  <button id="driveBtn" aria-pressed="false"><svg class="i" viewBox="0 0 24 24"><path d="M12 2l7 19-7-4-7 4z"/></svg><span id="driveLbl">Drive mode</span></button>
+</div>
+
+<div id="sheet"><button class="close" aria-label="Close">×</button><div id="sheetBody"></div></div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
@@ -150,9 +193,11 @@ map = new maplibregl.Map({
       attribution:"© OpenStreetMap contributors"}},
     layers: [{id:"osm", type:"raster", source:"osm"}],
   },
-  attributionControl: {compact: true},
+  attributionControl: false,
 });
-map.addControl(new maplibregl.NavigationControl({showCompass:false}), "top-right");
+map.addControl(new maplibregl.AttributionControl({compact: true,
+  customAttribution: "Signs on the street are authoritative. Data: Ville de Montréal, Agence de mobilité durable (CC BY 4.0)"}), "bottom-left");
+map.addControl(new maplibregl.NavigationControl({showCompass:false}), "bottom-right");
 
 function colorExpr() {
   const c = colors();
@@ -177,6 +222,7 @@ function applyFilter() {
 const width = ["interpolate", ["linear"], ["zoom"], 14, 2, 17, 5, 19, 8];
 
 map.on("load", () => {
+  document.querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show");
   map.addSource("curbs", {type:"geojson", data:{type:"FeatureCollection", features:[]}});
   map.addLayer({id:"curb-casing", type:"line", source:"curbs",
     paint:{"line-color":"#ffffff", "line-opacity":.85, "line-width":["interpolate",["linear"],["zoom"],14,3.5,17,8,19,12]},
@@ -231,9 +277,15 @@ async function load() {
 
 /* ---------- time ---------- */
 const whenEl = document.getElementById("when");
-function setNow() { atTime = null; whenEl.value = ""; load(); if (drive) lastFetch = 0; }
+const timeChip = document.getElementById("timeChip"), timePop = document.getElementById("timePop");
+function syncTimeChip() {
+  timeChip.querySelector("span").textContent = atTime
+    ? new Date(atTime).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"}) : "Now";
+}
+function setNow() { atTime = null; whenEl.value = ""; syncTimeChip(); timePop.hidden = true; load(); if (drive) lastFetch = 0; }
 document.getElementById("nowBtn").onclick = setNow;
-whenEl.onchange = () => { atTime = whenEl.value || null; load(); lastFetch = 0; };
+whenEl.onchange = () => { atTime = whenEl.value || null; syncTimeChip(); load(); lastFetch = 0; };
+timeChip.onclick = () => { timePop.hidden = !timePop.hidden; };
 setInterval(() => { if (!atTime) { load(); lastFetch = 0; } }, 5 * 60 * 1000);
 
 /* ---------- details ---------- */
@@ -301,7 +353,7 @@ driveBtn.onclick = () => drive ? stopDrive() : startDrive();
 
 function startDrive() {
   if (!navigator.geolocation) { hint("This browser has no location support"); return; }
-  drive = true; driveBtn.setAttribute("aria-pressed", true);
+  drive = true; driveBtn.setAttribute("aria-pressed", true); document.getElementById("driveLbl").textContent = "Stop";
   if (!marker) {
     const dot = document.createElement("div");
     dot.style.cssText = "width:16px;height:16px;border-radius:50%;background:#1d5fd1;border:3px solid #fff;box-shadow:0 0 0 2px #1d5fd1";
@@ -309,13 +361,11 @@ function startDrive() {
   }
   watchId = navigator.geolocation.watchPosition(onPos, e => hint("Location: " + e.message),
     {enableHighAccuracy: true, maximumAge: 2000, timeout: 20000});
-  document.getElementById("foot").style.display = "none";
 }
 function stopDrive() {
-  drive = false; driveBtn.setAttribute("aria-pressed", false);
+  drive = false; driveBtn.setAttribute("aria-pressed", false); document.getElementById("driveLbl").textContent = "Drive mode";
   if (watchId !== null) navigator.geolocation.clearWatch(watchId);
   watchId = null; marker?.remove(); sheet.style.display = "none"; here = null;
-  document.getElementById("foot").style.display = "";
 }
 async function onPos(p) {
   const {latitude: lat, longitude: lon, heading: h, speed} = p.coords;
@@ -379,6 +429,17 @@ findBtn.onclick = () => { find.on = !find.on; findChanged(); };
 stayEl.onchange = () => { find.minutes = Number(stayEl.value); findChanged(); };
 paidEl.onchange = () => { find.paid = paidEl.checked; findChanged(); };
 syncFind();
+
+/* ---------- menu, and keeping the map controls above the details card ---------- */
+const menuBtn = document.getElementById("menuBtn"), menu = document.getElementById("menu");
+menuBtn.onclick = (e) => { menu.hidden = !menu.hidden; menuBtn.setAttribute("aria-expanded", String(!menu.hidden)); e.stopPropagation(); };
+document.addEventListener("click", (e) => {
+  if (!menu.hidden && !menu.contains(e.target)) { menu.hidden = true; menuBtn.setAttribute("aria-expanded", "false"); }
+});
+new ResizeObserver(() => {
+  const h = sheet.style.display === "none" ? 0 : sheet.offsetHeight;
+  document.documentElement.style.setProperty("--sheet-h", h ? (h + 12) + "px" : "0px");
+}).observe(sheet);
 </script>
 </body>
 </html>
