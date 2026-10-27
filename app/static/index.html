@@ -21,7 +21,10 @@
 html,body{height:100%;margin:0}
 body{background:var(--bg);color:var(--fg);font:15px/1.35 system-ui,-apple-system,Segoe UI,sans-serif;display:flex;flex-direction:column}
 header{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;padding:8px 16px;background:var(--card);border-bottom:1px solid var(--line);z-index:5}
-h1{font-size:16px;margin:0 4px 0 0;font-weight:700}
+h1{font-size:16px;margin:0;font-weight:700}
+.brand{margin-right:4px}
+.ver{font-size:11px;color:var(--muted);line-height:1.2}
+.btn{display:inline-block;font:inherit;color:inherit;text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:6px 10px}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 button,input[type=datetime-local]{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:8px;padding:6px 10px}
 button{cursor:pointer}
@@ -56,7 +59,7 @@ button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);co
 </head>
 <body>
 <header>
-  <h1>Montreal Parking</h1>
+  <div class="brand"><h1>Montreal Parking</h1><div class="ver">__VERSION__</div></div>
   <div class="row">
     <button id="nowBtn" class="primary" title="Show parking right now">Now</button>
     <input id="when" type="datetime-local" aria-label="Show parking at this time">
@@ -67,7 +70,7 @@ button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);co
       <label><input type="checkbox" id="paid"> include paid</label>
     </div>
   </div>
-  <div class="row" style="margin-left:auto"><a href="/account" style="color:inherit">Account</a>
+  <div class="row" style="margin-left:auto"><a href="/settings" class="btn">Settings</a>
     <form method="post" action="/logout"><button>Sign out</button></form></div>
 </header>
 <div class="chips" id="chips" role="group" aria-label="Parking types to show"></div>

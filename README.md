@@ -65,9 +65,9 @@ checks (columns present, row counts within 10% of the last good run); otherwise 
   prints a QR code and 10 recovery codes. The same tool has `unlock`, `users`, `log` and `delete-user`.
 * Failed attempts are delayed, and after 10 in a row sign-in stays locked for everyone until `cli.py unlock`
   is run on the NAS. Every attempt is logged (never the password or code).
-* Each device is its own session. `/account` lists them with Revoke and shows the sign-in log. Sessions end
+* Each device is its own session. `/settings` lists them with Revoke and shows the sign-in log. Sessions end
   after 8 hours without use (`SESSION_IDLE_MINUTES`) or 30 days.
-* **Passkeys (Face ID):** on the Account page, add one per device (it asks for your password again, because a
+* **Passkeys (Face ID):** on the Settings page (the Settings button at the top right), add one per device (it asks for your password again, because a
   passkey signs in without the authenticator code). The sign-in page then has a "Sign in with Face ID / passkey"
   button. A passkey sign-in is held to the same lock and logs as a password one.
 * Not copied from HomeFinance: Plaid, which has nothing to do with parking.
@@ -77,6 +77,11 @@ See the header of `docker-compose.yml` and `.env.example`. In short: put the pro
 fill in `.env` (mainly `APP_SECRET`), create a Container Manager project from it, create your login with
 `cli.py`, then `sudo tailscale serve --bg --https=10000 http://127.0.0.1:8480` and open
 `https://YOUR-NAS.YOUR-TAILNET.ts.net:10000` on a phone or computer that has Tailscale.
+
+## Version
+`app/VERSION` holds the release number (MAJOR.MINOR.PATCH). It is shown under the title on the map page and on the
+Settings page, with the short commit the image was built from, for example "Version 1.3.0 (build 0123abc)". Bump
+it in every pull request: minor for a feature, patch for a fix.
 
 ## Develop
 ```
