@@ -42,10 +42,14 @@ checks (columns present, row counts within 10% of the last good run); otherwise 
 * `docs/DATA.md`, `docs/SPIKE-street-sides.md` data notes and the street-side matching experiment
 
 ## Known limits
-* **Sign arrows are not used yet.** A sign is assumed to govern the stretch of curb around its pole,
-  not "from here in this direction". Near block ends the status can be wrong. This is the biggest
-  accuracy gap.
-* Streets with no sign or bay in the data are not drawn (no information, not "free").
+* **Sign arrows decide how far a sign reaches.** Arrow 3 points toward the end of the curb line and arrow 2 toward
+  the start; a pair of such signs (same text) brackets the stretch between them, which is how a 2-space EV
+  zone stays 2 spaces. A sign with no arrow governs the curb around it, up to 100 m each way or halfway to the
+  next identical sign. Measured on the city data: for short reserved bays, 97% of pole pairs follow this pattern
+  on both sides of the street. The meaning of the rare codes (8, 22, 10, 11, 1) is guessed as "no direction".
+* **"No sign data" means the city has no sign recorded for that stretch, not that parking is allowed.** It is
+  drawn grey, and Find parking shows it amber instead of green. The city's data lags the street and some
+  boroughs are incomplete, so a stretch can have signs on the street that are not in the data.
 * "Free, time limit" and "reserved" only describe the rule; they do not know your vehicle or permit.
   Permit areas are shown as "permit only" for everyone.
 * Maintenance ("entretien", flexible dates) signs and about 1.4% of other texts are shown as "check sign".
