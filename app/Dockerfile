@@ -3,9 +3,11 @@ ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
-COPY etl.py server.py cli.py ./
+COPY VERSION etl.py server.py cli.py ./
 COPY parking ./parking
 COPY static ./static
+ARG GIT_COMMIT=""
+ENV BUILD_COMMIT=$GIT_COMMIT
 EXPOSE 8000
 # One worker only: the daily data refresh runs as a thread inside this process.
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
