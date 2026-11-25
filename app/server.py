@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 import etl
 from parking.accounts import AuthError, AuthService
+from parking.spot import SpotStore
 from parking.store import Store, local_time
 
 DATA = os.environ.get("DATA_DIR", "/data")
@@ -45,13 +46,15 @@ VERSION_TEXT = version_text(VERSION, BUILD)
 
 store = Store(os.path.join(DATA, "current", "curbs.pkl"))
 accounts: AuthService | None = None
+spots: SpotStore | None = None
 
 
 @asynccontextmanager
 async def lifespan(app):
-    global accounts
+    global accounts, spots
     os.makedirs(DATA, exist_ok=True)
     accounts = AuthService(os.path.join(DATA, "auth.db"), APP_SECRET, idle_minutes=IDLE_MINUTES, max_failed=MAX_FAILED)
+    spots = SpotStore(os.path.join(DATA, "parked.db"))
     if os.environ.get("DISABLE_ETL") != "1":
         threading.Thread(target=etl.daemon, daemon=True).start()
     store.refresh(force=True)
@@ -441,3 +444,57 @@ def here(request: Request, lat: float, lon: float, heading: float | None = Query
     need_user(request)
     _ready()
     return store.here(lat, lon, heading, local_time(t), stay=stay, paid=paid)
+
+
+# --- where I parked ---------------------------------------------------------------------
+class ParkedBody(BaseModel):
+    lat: float
+    lon: float
+    accuracy: float | None = None
+    note: str = ""
+
+
+class NoteBody(BaseModel):
+    note: str = ""
+
+
+def _me(request):
+    me = user_of(request)
+    if not me:
+        raise HTTPException(401, "login required")
+    return me
+
+
+@app.get("/api/parked")
+def parked_get(request: Request):
+    return {"parked": spots.get(_me(request).user_id)}
+
+
+@app.post("/api/parked")
+def parked_set(body: ParkedBody, request: Request):
+    need_xhr(request)
+    me = _me(request)
+    street = None
+    if store.ready:  # name the street so the saved spot reads "rue Boyer", not just coordinates
+        found = store.here(body.lat, body.lon, None, local_time(None), radius_m=40)
+        street = found.get("street") if found.get("found") else None
+    try:
+        return {"parked": spots.set(me.user_id, body.lat, body.lon, body.accuracy, street, body.note)}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.patch("/api/parked")
+def parked_note(body: NoteBody, request: Request):
+    need_xhr(request)
+    saved = spots.set_note(_me(request).user_id, body.note)
+    if saved is None:
+        raise HTTPException(404, "Nothing is saved yet.")
+    return {"parked": saved}
+
+
+@app.delete("/api/parked")
+def parked_clear(request: Request):
+    need_xhr(request)
+    spots.clear(_me(request).user_id)
+    return {"parked": None}

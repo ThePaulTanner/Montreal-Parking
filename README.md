@@ -20,6 +20,14 @@ whole stay, so a street-cleaning ban tomorrow morning rules out an overnight sta
 it is at least as long as your stay. In drive mode each side of the street says whether your stay fits, and if
 not, why ("not now: no parking", or "only until 16:00, then no stopping"). The map refreshes as you move.
 
+**Where you parked:** tap the **Park here** button (bottom-right, above Drive mode). It saves your phone's GPS
+position, drops a red P pin on the map and names the street. The button then becomes a green **Back to car**:
+one tap opens your phone's own maps app with walking directions to the car (Apple Maps on an iPhone or iPad,
+your default maps app on Android, Google Maps on a computer). Tap the pin for a card with how long ago you
+parked, a note field (level, landmark), **Move here** and **Clear**. One spot is kept per login, on the server
+(`parked.db` in the data folder), so your phone and your computer see the same spot. GPS needs the https
+(Tailscale) address; if the location can't be read it offers to save the centre of the map instead.
+
 ## How it works
 ```
 city CSV (signs) ──┐
@@ -38,7 +46,8 @@ checks (columns present, row counts within 10% of the last good run); otherwise 
 * `app/parking/agence.py` paid bay rules from the Agence tables
 * `app/parking/curbs.py` match poles and bays to street sides, cut curbs into segments
 * `app/parking/accounts.py`, `app/cli.py` login (password + authenticator code), logins managed on the NAS
-* `app/server.py`, `app/static/index.html` web app: sign-in, API, map, account page
+* `app/parking/spot.py` the saved parking spot, one per login
+* `app/server.py`, `app/static/index.html` web app: sign-in, API, map, settings page
 * `docs/DATA.md`, `docs/SPIKE-street-sides.md` data notes and the street-side matching experiment
 
 ## Known limits
