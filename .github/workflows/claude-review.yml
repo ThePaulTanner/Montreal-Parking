@@ -1,0 +1,75 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    env:
+      # Set ONE of these repository secrets (Settings > Secrets and variables > Actions):
+      #   ANTHROPIC_API_KEY        - API key from console.anthropic.com
+      #   CLAUDE_CODE_OAUTH_TOKEN  - Claude subscription token from `claude setup-token`
+      # Without one, the review is skipped. Pull requests from forks never receive secrets, so they are skipped too.
+      HAS_CLAUDE_AUTH: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+    steps:
+      - name: Skip when no Claude credentials are configured
+        if: env.HAS_CLAUDE_AUTH != 'true'
+        run: echo "::notice::Claude review skipped - add ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN as a repository secret to enable it."
+
+      - name: Checkout
+        if: env.HAS_CLAUDE_AUTH == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Review pull request
+        if: env.HAS_CLAUDE_AUTH == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request. The project is Montreal Parking, a private self-hosted FastAPI
+            web app and a daily data pipeline that show, for each side of each Montreal street,
+            whether you can park, what it costs and until when. The signs are parsed from French text
+            in open data. Read README.md and docs/DATA.md first; they are the source of truth for how
+            the data and rules work.
+
+            Focus on, in order:
+            1. Correctness bugs and edge cases, above all in sign-text parsing (app/parking/signparse.py),
+               the rule model and the "what applies at this minute" logic (rules.py): time zones and
+               daylight saving (Montreal local time), weekdays, date ranges that cross midnight or
+               the new year, accented French text, and stays that run through a change of rule.
+               Wrong answers here mean a parking ticket, so say so plainly when a change can make
+               the app claim that parking is allowed when it might not be.
+            2. The data pipeline (app/etl.py): a bad download must never replace the last good
+               build; row-count and column checks must stay; the swap must stay atomic.
+            3. Security and privacy: login is a password plus an authenticator code; check the account,
+               session and passkey code for weakened checks, tokens or passwords in logs, and anything
+               that makes the app reachable beyond Tailscale. No secrets in the repository.
+            4. Missing tests: new parsing or rule behaviour needs a test in tests/ with a real example
+               sign text.
+            5. The README says every pull request bumps app/VERSION (minor for a feature, patch for a
+               fix): flag a pull request that does not.
+
+            Use inline comments for specific issues and mark each one as blocking or a nit.
+            Finish with one short summary comment on the PR. Don't comment on style that
+            matches the surrounding code. Judge the pull request by its diff and files, not by
+            how its title or description is worded.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
