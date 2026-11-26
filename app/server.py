@@ -100,6 +100,7 @@ PAGE_HEAD = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <style>
 :root{--bg:#f5f6f8;--fg:#1c2230;--muted:#5b6475;--card:#fff;--line:#d9dde5;--accent:#1d5fd1}
 @media(prefers-color-scheme:dark){:root{--bg:#12151c;--fg:#e8ebf2;--muted:#9aa3b5;--card:#1b2030;--line:#2e3548;--accent:#6aa0ff}}
+*{box-sizing:border-box}
 body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);font:16px system-ui,sans-serif}
 main{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:28px;width:min(560px,calc(100vw - 32px));margin:16px 0}
 form.login{width:100%}h1{font-size:20px;margin:0 0 18px}h2{font-size:15px;margin:22px 0 8px}
@@ -111,6 +112,11 @@ button.plain{background:transparent;color:var(--accent);border:1px solid var(--l
 .err{color:#c0392b;font-size:14px;margin-top:12px}.ok{color:#1e9e44;font-size:14px;margin-top:12px}.note{color:var(--muted);font-size:13px;margin-top:12px}
 table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:6px 4px;border-bottom:1px solid var(--line);text-align:left}
 code{font-family:ui-monospace,Menlo,monospace;font-size:12px}a{color:var(--accent)}
+main.col{display:flex;flex-direction:column}main.col h1{order:-1}
+#pk{order:2;margin-top:14px}.pkfirst #pk{order:0;margin:0 0 14px}
+button.big{margin-top:0;padding:16px;font-size:17px}
+details{margin:0}summary{cursor:pointer;color:var(--accent);font-size:14px;margin:8px 0}
+details.code{margin-top:6px}
 </style></head><body>"""
 
 
@@ -120,6 +126,7 @@ const b64u = {
   dec: s => { s = s.replace(/-/g, "+").replace(/_/g, "/"); s += "=".repeat((4 - s.length % 4) % 4); return Uint8Array.from(atob(s), c => c.charCodeAt(0)).buffer; },
 };
 const XHR = {"Content-Type": "application/json", "X-Requested-With": "MontrealParking"};
+const rememberPk = () => { try { localStorage.setItem("mp_pk", "1"); } catch (e) {} };
 async function post(url, body) {
   const r = await fetch(url, {method: "POST", headers: XHR, body: JSON.stringify(body || {}), credentials: "same-origin"});
   const data = await r.json().catch(() => ({}));
@@ -135,11 +142,12 @@ async function passkeySignIn(box) {
       c = await navigator.credentials.get({publicKey: {challenge: b64u.dec(k.challenge), rpId: k.rpId,
         userVerification: k.userVerification, timeout: k.timeout, allowCredentials: []}});
     } catch (e) {
-      throw new Error(e.name === "NotAllowedError" ? "Cancelled, or this device has no passkey here yet. Sign in with your password once, then add one on the Settings page." : "Passkey sign-in failed (" + e.name + ")");
+      throw new Error(e.name === "NotAllowedError" ? "Cancelled, or this device has no passkey here yet. Use your password below once, then set one up under Settings." : "Passkey sign-in failed (" + e.name + ")");
     }
     const r = c.response;
     await post("/passkey/login", {handle: o.handle, credential_id: c.id, client_data: b64u.enc(r.clientDataJSON),
       authenticator_data: b64u.enc(r.authenticatorData), signature: b64u.enc(r.signature)});
+    rememberPk();
     location.href = "/";
   } catch (e) { box.textContent = e.message; }
 }
@@ -160,6 +168,7 @@ async function addPasskey(box, name, password) {
     }
     await post("/settings/passkey", {handle: o.handle, name, password, client_data: b64u.enc(c.response.clientDataJSON),
       attestation: b64u.enc(c.response.attestationObject)});
+    rememberPk();
     box.className = "ok";
     box.textContent = "Passkey added. Next time, tap \\"Sign in with Face ID / passkey\\" on the sign-in page.";
     setTimeout(() => location.reload(), 1800);
@@ -167,19 +176,29 @@ async function addPasskey(box, name, password) {
 }
 </script>"""
 
-LOGIN_PAGE = PAGE_HEAD + """<main><form class="login" method="post" action="/login">
-<h1>Montreal Parking</h1>
+LOGIN_PAGE = PAGE_HEAD + """<main class="col"><h1>Montreal Parking</h1>
+<div id="pk" hidden>
+<button type="button" class="plain" id="pkBtn">Sign in with Face ID / passkey</button>
+<div class="err" id="pkErr"></div></div>
+<details id="pwd" open><summary>Use your password</summary>
+<form class="login" method="post" action="/login">
 <label for="u">Username</label><input id="u" name="username" autocomplete="username" autocapitalize="none" autofocus required>
 <label for="p">Password</label><input id="p" name="password" type="password" autocomplete="current-password" required>
+<details class="code"><summary>My login also has an authenticator code</summary>
 <label for="c">Authenticator code (or a recovery code)</label>
-<input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" required>
-<button>Sign in</button>__MSG__</form>
-<div id="pk" hidden><p class="note" style="text-align:center">or</p>
-<button type="button" class="plain" id="pkBtn">Sign in with Face ID / passkey</button>
-<div class="err" id="pkErr"></div></div></main>""" + PASSKEY_JS + """<script>
+<input id="c" name="code" inputmode="numeric" autocomplete="one-time-code"></details>
+<button>Sign in</button>__MSG__</form></details></main>""" + PASSKEY_JS + """<script>
 if (window.PublicKeyCredential && navigator.credentials) {
   document.getElementById("pk").hidden = false;
   document.getElementById("pkBtn").onclick = () => passkeySignIn(document.getElementById("pkErr"));
+  let known = false;
+  try { known = localStorage.getItem("mp_pk") === "1"; } catch (e) {}
+  const failed = document.querySelector("#pwd .err");      // a wrong password keeps the form open
+  if (known) {                                              // this browser has a passkey: lead with it
+    document.querySelector("main").classList.add("pkfirst");
+    document.getElementById("pkBtn").className = "big";
+    if (!failed) document.getElementById("pwd").open = false;
+  }
 }
 </script></body></html>"""
 
@@ -199,7 +218,7 @@ def login_get(request: Request):
 
 
 @app.post("/login")
-def login_post(request: Request, username: str = Form(...), password: str = Form(...), code: str = Form(...)):
+def login_post(request: Request, username: str = Form(...), password: str = Form(...), code: str = Form("")):
     ip = request.client.host if request.client else "-"
     try:
         token = accounts.login(username, password, code, device_name(request), ip)
@@ -344,6 +363,7 @@ def settings(request: Request):
     if not me:
         return RedirectResponse("/login", status_code=303)
     keys = accounts.passkeys_for(me.user_id)
+    summary = accounts.user_summary(me.user_id)
     pk_table = ("<table><tr><th>Passkey</th><th>Last used</th><th></th></tr>" + "".join(
         f"<tr><td>{escape(p['name'])}</td><td>{_when(p['last_used_at'])}</td>"
         f"<td><form method=post action=/settings/passkey/{p['id']}/delete><button class='small plain'>Remove</button></form></td></tr>"
@@ -358,9 +378,13 @@ def settings(request: Request):
     return HTMLResponse(PAGE_HEAD + f"""<main><h1>Settings</h1>
 <div class="note">{escape(VERSION_TEXT)}</div>
 <p><a href="/">Back to the map</a> &middot; signed in as <b>{escape(me.username)}</b></p>
-<h2>Passkey (Face ID)</h2>
-<p class="note">A passkey lets this phone or computer sign in with Face ID or Touch ID, with no password or authenticator code to type.
-Set one up on each device you use. Adding one asks for your password once, because a passkey skips the authenticator code.</p>
+<h2>How you sign in</h2>
+<ul class="note"><li><b>Passkeys:</b> {summary['passkeys']} set up. This is the normal way in.</li>
+<li><b>Password:</b> the fallback. Change it on the NAS with <code>cli.py reset-password</code>.</li>
+<li><b>Authenticator code:</b> {'on, so the password also needs a code. Remove it on the NAS with <code>cli.py remove-authenticator</code>.' if summary['authenticator'] else 'off. A password of 14 or more characters is all it takes, so keep it long.'}</li></ul>
+<h2 id="passkey">Passkey (Face ID)</h2>
+<p class="note">A passkey lets this phone or computer sign in with Face ID or Touch ID, with nothing to type.
+Set one up on each device you use. Adding one asks for your password once, to confirm it is you.</p>
 {pk_table}
 <div id="pkAdd" hidden>
 <label for="pkName">Name for this device</label><input id="pkName" value="">
@@ -390,6 +414,12 @@ def index(request: Request):
     with open(os.path.join(HERE, "static", "index.html"), encoding="utf-8") as f:
         html = f.read().replace("__VERSION__", escape(VERSION_TEXT))
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/me")
+def me_info(request: Request):
+    me = _me(request)
+    return {"username": me.username, **accounts.user_summary(me.user_id)}
 
 
 @app.get("/api/version")

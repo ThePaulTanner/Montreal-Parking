@@ -25,8 +25,8 @@ PW = "correct horse battery"
 @pytest.fixture(scope="module")
 def client():
     with TestClient(server.app, follow_redirects=False) as c:
-        secret, _, _ = server.accounts.create_user("paul", PW)
-        token = server.accounts.login("paul", PW, pyotp.TOTP(secret).now(), "Test browser")
+        server.accounts.create_user("paul", PW)                  # password only, like a default login
+        token = server.accounts.login("paul", PW, "", "Test browser")
         c.cookies.set(server.COOKIE, token)
         yield c
 
@@ -185,3 +185,39 @@ def test_the_map_page_has_the_park_here_button_and_a_toast(client):
     for ident in ("carBtn", "carLbl", "toast"):
         assert f'id="{ident}"' in html, ident
     assert html.index('id="carBtn"') > html.index('id="fabs"')          # floats with the Drive button
+
+
+# --- sign-in page and settings for passkey-first login ------------------------------------
+
+def test_the_sign_in_page_leads_with_the_passkey_and_hides_the_code_field(anon):
+    html = anon.get("/login").text
+    assert 'id="pkBtn"' in html and "Sign in with Face ID / passkey" in html
+    assert html.index('id="pk"') < html.index('id="pwd"')                         # passkey section comes first in the page
+    assert '<details id="pwd" open>' in html                                      # the password form is open by default
+    code_input = html[html.index('name="code"'):].split(">")[0]
+    assert "required" not in code_input                                           # the code is optional
+    assert "My login also has an authenticator code" in html
+
+
+def test_a_password_only_login_signs_in_through_the_form_without_a_code(anon):
+    ok = anon.post("/login", data={"username": "paul", "password": PW})
+    assert ok.status_code == 303 and server.COOKIE in ok.headers.get("set-cookie", "")
+    bad = anon.post("/login", data={"username": "paul", "password": "not the password at all"})
+    assert bad.status_code == 401 and "Wrong username, password or code." in bad.text
+    assert 'class="err"' in bad.text                                              # so the form stays open on the page
+
+
+def test_settings_explains_how_you_sign_in(client):
+    html = client.get("/settings").text
+    assert "How you sign in" in html and "Passkeys:</b> 0 set up" in html
+    assert "Authenticator code:</b> off" in html and "reset-password" in html
+
+
+def test_me_endpoint_reports_the_sign_in_methods(client, anon):
+    assert client.get("/api/me").json() == {"username": "paul", "authenticator": False, "passkeys": 0}
+    assert anon.get("/api/me").status_code == 401
+
+
+def test_the_map_page_offers_to_set_up_a_passkey(client):
+    html = client.get("/").text
+    assert 'id="pkNudge"' in html and "/settings#passkey" in html and 'id="pkLater"' in html

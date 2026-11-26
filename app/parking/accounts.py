@@ -1,15 +1,18 @@
-"""Logins: password + authenticator code (or one-time recovery code), server-side sessions.
+"""Logins: passkeys first, a password as the fallback, an authenticator code only if a login has one.
 
-Modelled on the HomeFinance server's login so both apps behave the same way:
+- The normal way in is a passkey (Face ID / Touch ID): see passkeys.py. The password is the fallback.
 - Passwords: Argon2id over an HMAC of the password with a secret pepper derived from APP_SECRET.
-- Second factor: TOTP that can only be used once (never an older step than the last used), or a
-  single-use recovery code.
+  A login without an authenticator needs a password of at least 14 characters (12 with one), because the
+  password is then the only thing between a device on the tailnet and the app.
+- An authenticator is optional: TOTP that can only be used once (never an older step than the last used),
+  plus single-use recovery codes. A login that has one must still give a code. `cli.py add-authenticator`
+  and `remove-authenticator` change that on the NAS, so losing the app never means recreating the login.
 - Failures are delayed (doubling), every attempt goes to a log (never the password or code), and
   after MAX_FAILED_LOGINS in a row sign-in stays locked for everyone until `cli.py unlock` is run on
   the NAS.
 - A session is a random 256-bit token kept only as a hash; each browser/phone is its own revocable
   session. Sessions end after SESSION_IDLE_MINUTES of no use, or after 30 days.
-- Logins are created on the NAS (`cli.py create-user`), never through the web.
+- Logins and password resets happen on the NAS (`cli.py`), never through the web.
 """
 import base64
 import hashlib
@@ -27,7 +30,8 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from . import passkeys
 
-MIN_PASSWORD_LENGTH = 12
+MIN_PASSWORD_LENGTH = 12          # with an authenticator
+MIN_PASSWORD_LENGTH_ALONE = 14    # password (or passkey) only
 ISSUER = "Montreal Parking"
 SESSION_MAX_DAYS = 30
 INVALID = "Wrong username, password or code."
@@ -154,26 +158,38 @@ class AuthService:
 
     def users(self):
         return [dict(r) for r in self.db.execute(
-            "SELECT id, username, created_at, last_sign_in, locked_at FROM users ORDER BY id")]
+            "SELECT id, username, created_at, last_sign_in, locked_at, totp_secret != '' AS authenticator, "
+            "(SELECT COUNT(*) FROM passkeys p WHERE p.user_id = users.id) AS passkeys FROM users ORDER BY id")]
 
-    def create_user(self, username, password):
-        """Returns (totp_secret, otpauth_uri, recovery_codes). Shown once, never stored in clear."""
+    def user_summary(self, user_id):
+        row = self._one("SELECT totp_secret != '' AS authenticator, "
+                        "(SELECT COUNT(*) FROM passkeys p WHERE p.user_id = users.id) AS passkeys "
+                        "FROM users WHERE id=?", (user_id,))
+        return {"authenticator": bool(row["authenticator"]), "passkeys": row["passkeys"]} if row else None
+
+    @staticmethod
+    def _check_password_length(password, authenticator):
+        need = MIN_PASSWORD_LENGTH if authenticator else MIN_PASSWORD_LENGTH_ALONE
+        if len(password) < need:
+            raise ValueError(f"Use a password of at least {need} characters.")
+
+    def create_user(self, username, password, authenticator=False):
+        """Make a login. Returns (totp_secret, otpauth_uri, recovery_codes); all empty without an
+        authenticator. Shown once, never stored in clear."""
         username = username.strip().lower()
         if not username:
             raise ValueError("A username is required.")
-        if len(password) < MIN_PASSWORD_LENGTH:
-            raise ValueError(f"Use a password of at least {MIN_PASSWORD_LENGTH} characters.")
+        self._check_password_length(password, authenticator)
         if self._one("SELECT 1 FROM users WHERE username=?", (username,)):
             raise ValueError("That username is already taken.")
-        secret = pyotp.random_base32()
-        codes = ["-".join(secrets.token_hex(2) for _ in range(5)) for _ in range(10)]
+        secret, codes = (pyotp.random_base32(), self._new_recovery_codes()) if authenticator else ("", [])
         with self._lock:
             self.db.execute("BEGIN")
             try:
                 uid = self.db.execute(
                     "INSERT INTO users(username, password_hash, totp_secret, created_at) VALUES (?,?,?,?)",
                     (username, self._hasher.hash(self._prehash(password)),
-                     self._fernet.encrypt(secret.encode()).decode(), self.clock())).lastrowid
+                     self._fernet.encrypt(secret.encode()).decode() if secret else "", self.clock())).lastrowid
                 for c in codes:
                     self.db.execute("INSERT INTO recovery_codes(user_id, code_hash) VALUES (?,?)",
                                     (uid, _sha256(_norm_recovery(c))))
@@ -181,7 +197,76 @@ class AuthService:
             except Exception:
                 self.db.execute("ROLLBACK")
                 raise
+        if not secret:
+            return None, None, []
         return secret, pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name=ISSUER), codes
+
+    @staticmethod
+    def _new_recovery_codes():
+        return ["-".join(secrets.token_hex(2) for _ in range(5)) for _ in range(10)]
+
+    def _revoke_all(self, user_id):
+        self._run("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (self.clock(), user_id))
+
+    def set_password(self, username, password):
+        """Replace a password (a NAS-only action). Signs the login out everywhere and clears its lock;
+        passkeys and the authenticator are kept."""
+        user = self._one("SELECT id, totp_secret FROM users WHERE username=?", (username.strip().lower(),))
+        if user is None:
+            return False
+        self._check_password_length(password, bool(user["totp_secret"]))
+        with self._lock:
+            self._run("UPDATE users SET password_hash=?, failed_streak=0, locked_at=NULL WHERE id=?",
+                      (self._hasher.hash(self._prehash(password)), user["id"]))
+            self._revoke_all(user["id"])
+            self._log("password_reset", username.strip().lower(), "cli")
+        return True
+
+    def add_authenticator(self, username):
+        """Start (or replace) the authenticator and its recovery codes. Returns (secret, uri, codes) or None."""
+        key = username.strip().lower()
+        user = self._one("SELECT id FROM users WHERE username=?", (key,))
+        if user is None:
+            return None
+        secret, codes = pyotp.random_base32(), self._new_recovery_codes()
+        with self._lock:
+            self.db.execute("BEGIN")
+            try:
+                self.db.execute("UPDATE users SET totp_secret=?, totp_last_step=0 WHERE id=?",
+                                (self._fernet.encrypt(secret.encode()).decode(), user["id"]))
+                self.db.execute("DELETE FROM recovery_codes WHERE user_id=?", (user["id"],))
+                for c in codes:
+                    self.db.execute("INSERT INTO recovery_codes(user_id, code_hash) VALUES (?,?)",
+                                    (user["id"], _sha256(_norm_recovery(c))))
+                self.db.execute("COMMIT")
+            except Exception:
+                self.db.execute("ROLLBACK")
+                raise
+            self._revoke_all(user["id"])
+            self._log("authenticator_added", key, "cli")
+        return secret, pyotp.TOTP(secret).provisioning_uri(name=key, issuer_name=ISSUER), codes
+
+    def remove_authenticator(self, username, new_password):
+        """Drop the authenticator (a lost phone, say). A new password is required in the same step, because the
+        login is then protected by the password alone and so needs the longer minimum."""
+        key = username.strip().lower()
+        user = self._one("SELECT id FROM users WHERE username=?", (key,))
+        if user is None:
+            return False
+        self._check_password_length(new_password, False)
+        with self._lock:
+            self.db.execute("BEGIN")
+            try:
+                self.db.execute("UPDATE users SET totp_secret='', totp_last_step=0, password_hash=?, failed_streak=0, "
+                                "locked_at=NULL WHERE id=?", (self._hasher.hash(self._prehash(new_password)), user["id"]))
+                self.db.execute("DELETE FROM recovery_codes WHERE user_id=?", (user["id"],))
+                self.db.execute("COMMIT")
+            except Exception:
+                self.db.execute("ROLLBACK")
+                raise
+            self._revoke_all(user["id"])
+            self._log("authenticator_removed", key, "cli")
+        return True
 
     def delete_user(self, username):
         return self._run("DELETE FROM users WHERE username=?", (username.strip().lower(),)) == 1
@@ -237,7 +322,9 @@ class AuthService:
             password_ok = self._verify_password(user["password_hash"] if user else None, password)
             code, method = code.strip(), None
             if password_ok and user is not None:
-                if self._check_totp(user, code):
+                if not user["totp_secret"]:
+                    method = "password"          # no authenticator on this login: a code is not asked for
+                elif self._check_totp(user, code):
                     method = "totp"
                 elif self._check_recovery(user, code):
                     method = "recovery"

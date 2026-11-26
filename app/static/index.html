@@ -51,6 +51,8 @@ h1{font-size:16px;margin:0;font-weight:700}
 .chip.tool{--c:var(--accent);opacity:1}
 .chip.tool[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
 
+.nudge{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:14px}
+.nudge .btn{padding:6px 12px;background:transparent}
 .panel{margin:0 12px;padding:10px 12px;border-radius:14px;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow)}
 #timePop{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 #timePop label{font-size:14px}
@@ -126,6 +128,10 @@ button.primary{background:var(--accent);border:1px solid var(--accent);color:#ff
     <label><input type="checkbox" id="paid"> include paid</label>
   </div>
   <div id="hint"></div>
+  <div class="panel nudge" id="pkNudge" hidden>
+    <span>Set up Face ID for one-tap sign-in.</span>
+    <a class="btn" href="/settings#passkey">Set up</a><button id="pkLater" class="btn">Not now</button>
+  </div>
 </div>
 
 <div class="panel" id="menu" hidden>
@@ -558,6 +564,19 @@ async function parkHere(replace) {
 carBtn.onclick = () => { car ? navigateToCar() : parkHere(false); };
 fetch("/api/parked", {credentials: "same-origin"}).then((r) => r.ok ? r.json() : null)
   .then((d) => { if (d && d.parked) { car = d.parked; syncCar(); } }).catch(() => {});
+
+/* ---------- offer to set up a passkey if there is none ---------- */
+fetch("/api/me", {credentials: "same-origin"}).then((r) => r.ok ? r.json() : null).then((d) => {
+  try {
+    if (!d || d.passkeys > 0 || !(window.PublicKeyCredential && window.isSecureContext)) return;
+    if (localStorage.getItem("mp_pk_later") === "1") return;
+  } catch (e) { return; }
+  document.getElementById("pkNudge").hidden = false;
+}).catch(() => {});
+document.getElementById("pkLater").onclick = () => {
+  try { localStorage.setItem("mp_pk_later", "1"); } catch (e) {}
+  document.getElementById("pkNudge").hidden = true;
+};
 
 /* ---------- menu, and keeping the map controls above the details card ---------- */
 const menuBtn = document.getElementById("menuBtn"), menu = document.getElementById("menu");

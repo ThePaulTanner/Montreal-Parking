@@ -8,7 +8,9 @@
 #      "Use existing docker-compose.yml", and build.
 #   4. Create your login on the NAS (never through the web):
 #        sudo docker exec -it mtl-parking-app python cli.py create-user --username paul
-#      It prints a QR code for your authenticator app and 10 one-time recovery codes.
+#      Choose a password of 14+ characters. Then sign in once and set up a passkey (Face ID) in Settings.
+#      (Add `--with-authenticator` if you also want an authenticator code. If you ever lose a password or
+#      an authenticator app: `cli.py reset-password` or `cli.py remove-authenticator`, same container.)
 #   5. Put it on your tailnet, same as HomeFinance. The app listens on 127.0.0.1 only, so this is
 #      the only way in:
 #        sudo tailscale serve --bg --https=10000 http://127.0.0.1:8480
@@ -53,7 +55,7 @@ services:
       # The city portal rejects default HTTP clients, so the downloader sends a browser UA.
       HTTP_USER_AGENT: ${HTTP_USER_AGENT:-Mozilla/5.0 (compatible; mtl-parking/1.0)}
       MIN_ROWS_RATIO: "0.9" # reject a download with <90% of the last good run's rows
-      # Login: password + authenticator code. APP_SECRET protects stored passwords and authenticator
+      # Login: passkey first, password fallback. APP_SECRET protects stored passwords and authenticator
       # keys; keep it safe and never change it (existing logins would stop working).
       APP_SECRET: ${APP_SECRET:?set APP_SECRET in .env}
       SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-480} # sign out after this long without use
