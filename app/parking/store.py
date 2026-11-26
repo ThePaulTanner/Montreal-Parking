@@ -86,6 +86,8 @@ class Store:
         With `stay` (minutes) only curbs where a stay of that length starting at `dt` fits are returned,
         marked go (free the whole time), paid (fits if you pay; only when `paid`) or maybe (check the sign).
         """
+        if not all(math.isfinite(v) for v in (west, south, east, north)):
+            return {"type": "FeatureCollection", "features": []}
         cache, seen, feats = {}, set(), []
         for i in self._cells(west, south, east, north):
             if i in seen:
@@ -143,6 +145,8 @@ class Store:
     # --- drive mode ----------------------------------------------------------------------
     def here(self, lat, lon, heading, dt, radius_m=45, stay=None, paid=False):
         """The nearest street segment's two sides, labelled left/right of travel when heading is known."""
+        if not (math.isfinite(lat) and math.isfinite(lon) and -85 <= lat <= 85 and -180 <= lon <= 180):
+            return {"found": False}  # near the poles a degree of longitude is ~0 m wide and the grid scan would never end
         lat0 = lat
         kx = M_LON_EQ * math.cos(math.radians(lat0))
 

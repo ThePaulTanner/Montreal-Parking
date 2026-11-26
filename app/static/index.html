@@ -51,6 +51,8 @@ h1{font-size:16px;margin:0;font-weight:700}
 .chip.tool{--c:var(--accent);opacity:1}
 .chip.tool[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
 
+.nudge{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:14px}
+.nudge .btn{padding:6px 12px;background:transparent}
 .panel{margin:0 12px;padding:10px 12px;border-radius:14px;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow)}
 #timePop{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 #timePop label{font-size:14px}
@@ -66,7 +68,10 @@ button.primary{background:var(--accent);border:1px solid var(--accent);color:#ff
 #menu form{margin:0}
 
 #fabs{position:fixed;z-index:5;right:12px;bottom:calc(var(--fab-lift) + 16px + env(safe-area-inset-bottom));display:flex;flex-direction:column;align-items:flex-end;gap:10px}
-#driveBtn{display:inline-flex;align-items:center;gap:8px;padding:13px 20px;border:0;border-radius:999px;background:var(--accent);color:#fff;font-weight:700;box-shadow:var(--shadow)}
+#carBtn,#driveBtn{display:inline-flex;align-items:center;gap:8px;padding:13px 20px;border:0;border-radius:999px;background:var(--accent);color:#fff;font-weight:700;box-shadow:var(--shadow)}
+#carBtn{background:var(--card);color:var(--fg);border:1px solid var(--line)}
+#carBtn.has-car{background:#16833a;color:#fff;border-color:#16833a}
+#carBtn svg.i{stroke:none;fill:currentColor}
 #driveBtn svg.i{fill:currentColor;stroke:none}
 #driveBtn[aria-pressed=true]{background:#c0392b}
 
@@ -82,8 +87,15 @@ button.primary{background:var(--accent);border:1px solid var(--accent);color:#ff
 .card ul{margin:6px 0 0;padding-left:18px;font-size:12px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
 .street{font-weight:700;margin:0 28px 8px 0}
 
+.carpin{width:36px;height:36px;border-radius:50%;background:#d93025;color:#fff;border:3px solid #fff;box-shadow:var(--shadow);display:grid;place-items:center;font-weight:800;font-size:17px;cursor:pointer}
+#toast{position:fixed;z-index:9;left:50%;transform:translateX(-50%);bottom:calc(var(--fab-lift) + 206px + env(safe-area-inset-bottom));background:#202124;color:#fff;padding:9px 16px;border-radius:999px;font-size:14px;max-width:calc(100% - 32px);text-align:center;box-shadow:var(--shadow);display:none}
+.carcard .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.carcard input[type=text]{flex:1;min-width:140px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.carcard button{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:9px 14px}
+.carcard button.go{background:#16833a;border-color:#16833a;color:#fff;font-weight:700}
+.carcard .warn{color:#b26a00;font-size:13px;margin-top:4px}
 /* map controls sit above the drive button / details card */
-.maplibregl-ctrl-bottom-right{bottom:calc(var(--fab-lift) + 78px + env(safe-area-inset-bottom))}
+.maplibregl-ctrl-bottom-right{bottom:calc(var(--fab-lift) + 140px + env(safe-area-inset-bottom))}
 .maplibregl-ctrl-bottom-left{bottom:var(--sheet-h)}
 .maplibregl-ctrl-attrib{font-size:10px}
 </style>
@@ -116,6 +128,10 @@ button.primary{background:var(--accent);border:1px solid var(--accent);color:#ff
     <label><input type="checkbox" id="paid"> include paid</label>
   </div>
   <div id="hint"></div>
+  <div class="panel nudge" id="pkNudge" hidden>
+    <span>Set up Face ID for one-tap sign-in.</span>
+    <a class="btn" href="/settings#passkey">Set up</a><button id="pkLater" class="btn">Not now</button>
+  </div>
 </div>
 
 <div class="panel" id="menu" hidden>
@@ -124,8 +140,11 @@ button.primary{background:var(--accent);border:1px solid var(--accent);color:#ff
 </div>
 
 <div id="fabs">
+  <button id="carBtn" title="Save where you parked"><svg class="i" viewBox="0 0 24 24"><path d="M6 3h7a5 5 0 010 10H9v8H6z M9 6v4h4a2 2 0 000-4z" fill-rule="evenodd"/></svg><span id="carLbl">Park here</span></button>
   <button id="driveBtn" aria-pressed="false"><svg class="i" viewBox="0 0 24 24"><path d="M12 2l7 19-7-4-7 4z"/></svg><span id="driveLbl">Drive mode</span></button>
 </div>
+
+<div id="toast" role="status"></div>
 
 <div id="sheet"><button class="close" aria-label="Close">×</button><div id="sheetBody"></div></div>
 
@@ -429,6 +448,149 @@ findBtn.onclick = () => { find.on = !find.on; findChanged(); };
 stayEl.onchange = () => { find.minutes = Number(stayEl.value); findChanged(); };
 paidEl.onchange = () => { find.paid = paidEl.checked; findChanged(); };
 syncFind();
+
+
+/* ---------- where I parked ---------- */
+let car = null, carMarker = null, toastTimer = null, carLoaded = false;
+const carBtn = document.getElementById("carBtn"), carLbl = document.getElementById("carLbl");
+const CAR_HEADERS = {"Content-Type": "application/json", "X-Requested-With": "MontrealParking"};
+
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.style.display = "block";
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.style.display = "none"; }, 4500);
+}
+async function carApi(method, body) {
+  const r = await fetch("/api/parked", {method, credentials: "same-origin", headers: CAR_HEADERS, body: body ? JSON.stringify(body) : undefined});
+  if (r.status === 401) { location.href = "/login"; throw new Error("login"); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Could not save");
+  return data.parked;
+}
+
+// <navurl>
+// Open the phone's own maps app with walking directions to the car. iPhone and iPad: Apple Maps.
+// Android: a geo: link, which opens whichever maps app is the default. Anything else: Google Maps.
+function navUrl(lat, lon, label, ua, touchPoints) {
+  ua = ua || navigator.userAgent || "";
+  const ll = lat.toFixed(6) + "," + lon.toFixed(6);
+  const name = encodeURIComponent(label || "My car").replace(/[()]/g, (c) => c === "(" ? "%28" : "%29");  // brackets would end a geo: label
+  const ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && (touchPoints ?? navigator.maxTouchPoints) > 1);
+  if (ios) return `https://maps.apple.com/?daddr=${ll}&dirflg=w&q=${name}`;
+  if (/Android/.test(ua)) return `geo:${ll}?q=${ll}(${name})`;
+  return `https://www.google.com/maps/dir/?api=1&destination=${ll}&travelmode=walking`;
+}
+// </navurl>
+
+function navigateToCar() {
+  if (!car) return;
+  const url = navUrl(car.lat, car.lon, car.street ? "My car on " + car.street : "My car");
+  if (url.startsWith("http") && !/maps\.apple\.com/.test(url)) window.open(url, "_blank", "noopener");
+  else window.location.href = url;
+}
+function ago(iso) {
+  const m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} h ${m % 60} min ago`;
+  const d = Math.floor(h / 24); return `${d} day${d > 1 ? "s" : ""} ago`;
+}
+function syncCar() {
+  carBtn.classList.toggle("has-car", !!car);
+  carLbl.textContent = car ? "Back to car" : "Park here";
+  carBtn.title = car ? "Open your maps app with directions back to the car" : "Save where you parked";
+  if (!car) { carMarker?.remove(); carMarker = null; return; }
+  if (!carMarker) {
+    const el = document.createElement("div"); el.className = "carpin"; el.textContent = "P"; el.title = "Your car";
+    el.onclick = (e) => { e.stopPropagation(); showCar(); };
+    carMarker = new maplibregl.Marker({element: el});
+  }
+  carMarker.setLngLat([car.lon, car.lat]).addTo(map);
+}
+function showCar() {
+  if (!car) return;
+  sheetBody.replaceChildren();
+  const wrap = document.createElement("div"); wrap.className = "carcard";
+  const title = document.createElement("div"); title.className = "street"; title.textContent = "Your car"; wrap.append(title);
+  const where = document.createElement("div"); where.className = "big";
+  where.style.cssText = "font-size:20px;font-weight:700";
+  where.textContent = car.street || "Saved location"; wrap.append(where);
+  const when = document.createElement("div"); when.className = "sub"; when.style.cssText = "color:var(--muted);font-size:14px";
+  when.textContent = "Parked " + ago(car.parked_at); wrap.append(when);
+  if (car.accuracy_m && car.accuracy_m > 30) {
+    const w = document.createElement("div"); w.className = "warn";
+    w.textContent = `The location is only accurate to about ${Math.round(car.accuracy_m)} m. Check it on the map.`; wrap.append(w);
+  }
+  const noteRow = document.createElement("div"); noteRow.className = "row";
+  const note = document.createElement("input"); note.type = "text"; note.maxLength = 120;
+  note.placeholder = "Note (level, landmark...)"; note.value = car.note || ""; note.setAttribute("aria-label", "Note about where you parked");
+  const saveNote = document.createElement("button"); saveNote.textContent = "Save note";
+  saveNote.onclick = async () => { try { car = await carApi("PATCH", {note: note.value}); toast("Note saved"); } catch (e) { toast(e.message); } };
+  noteRow.append(note, saveNote); wrap.append(noteRow);
+  const row = document.createElement("div"); row.className = "row";
+  const go = document.createElement("button"); go.className = "go"; go.textContent = "Navigate to car"; go.onclick = navigateToCar;
+  const move = document.createElement("button"); move.textContent = "Move here"; move.onclick = () => parkHere(true);
+  const clear = document.createElement("button"); clear.textContent = "Clear";
+  clear.onclick = async () => {
+    try { await carApi("DELETE"); car = null; syncCar(); sheet.style.display = "none"; toast("Parking spot cleared"); }
+    catch (e) { toast(e.message); }
+  };
+  row.append(go, move, clear); wrap.append(row);
+  sheetBody.append(wrap); sheet.style.display = "block";
+  map.easeTo({center: [car.lon, car.lat], duration: 400});
+}
+function getFix() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) { reject(new Error("This browser has no location support")); return; }
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({lat: p.coords.latitude, lon: p.coords.longitude, accuracy: p.coords.accuracy}),
+      (e) => reject(new Error(e.message || "Could not get your location")),
+      {enableHighAccuracy: true, timeout: 15000, maximumAge: 0});
+  });
+}
+async function parkHere(replace) {
+  toast("Getting your location…");
+  let fix;
+  try { fix = await getFix(); }
+  catch (e) {
+    if (!confirm(e.message + ".\n\nSave the spot at the centre of the map instead?")) { toast("Not saved"); return; }
+    const c = map.getCenter(); fix = {lat: c.lat, lon: c.lng, accuracy: null};
+  }
+  try {
+    car = await carApi("POST", {lat: fix.lat, lon: fix.lon, accuracy: fix.accuracy, note: replace && car ? car.note : ""});
+    syncCar(); toast(car.street ? "Parked on " + car.street : "Parking spot saved"); showCar();
+  } catch (e) { toast(e.message); }
+}
+async function loadCar() {
+  try {
+    const r = await fetch("/api/parked", {credentials: "same-origin"});
+    if (!r.ok) return;
+    const d = await r.json();
+    car = d.parked || null; carLoaded = true; syncCar();
+  } catch (e) { /* offline: carLoaded stays false */ }
+}
+// Until the saved spot has been read we do not know whether there is one, and "Park here" would overwrite it.
+carBtn.onclick = async () => {
+  if (!carLoaded) await loadCar();
+  if (!carLoaded) { toast("Could not check your saved spot. Try again."); return; }
+  car ? navigateToCar() : parkHere(false);
+};
+loadCar();
+
+/* ---------- offer to set up a passkey if there is none ---------- */
+fetch("/api/me", {credentials: "same-origin"}).then((r) => r.ok ? r.json() : null).then((d) => {
+  try {
+    if (d) localStorage.setItem("mp_totp", d.authenticator ? "1" : "0");
+    if (!d || d.passkeys > 0 || !(window.PublicKeyCredential && window.isSecureContext)) return;
+    if (localStorage.getItem("mp_pk_later") === "1") return;
+  } catch (e) { return; }
+  document.getElementById("pkNudge").hidden = false;
+}).catch(() => {});
+document.getElementById("pkLater").onclick = () => {
+  try { localStorage.setItem("mp_pk_later", "1"); } catch (e) {}
+  document.getElementById("pkNudge").hidden = true;
+};
 
 /* ---------- menu, and keeping the map controls above the details card ---------- */
 const menuBtn = document.getElementById("menuBtn"), menu = document.getElementById("menu");
