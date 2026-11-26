@@ -11,8 +11,9 @@ from contextlib import asynccontextmanager
 from html import escape
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import etl
 from parking.accounts import AuthError, AuthService
@@ -54,7 +55,7 @@ async def lifespan(app):
     global accounts, spots
     os.makedirs(DATA, exist_ok=True)
     accounts = AuthService(os.path.join(DATA, "auth.db"), APP_SECRET, idle_minutes=IDLE_MINUTES, max_failed=MAX_FAILED)
-    spots = SpotStore(os.path.join(DATA, "parked.db"))
+    spots = SpotStore(os.path.join(DATA, "auth.db"))  # same file as the logins: a spot goes when its login goes
     if os.environ.get("DISABLE_ETL") != "1":
         threading.Thread(target=etl.daemon, daemon=True).start()
     store.refresh(force=True)
@@ -62,6 +63,14 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.exception_handler(RequestValidationError)
+async def bad_input(request, exc):
+    """A 422 that does not echo the rejected value back: a NaN in it cannot be written as JSON and turned the
+    answer into a 500."""
+    return JSONResponse({"detail": [{"loc": list(e.get("loc", ())), "msg": e.get("msg"), "type": e.get("type")}
+                                    for e in exc.errors()]}, status_code=422)
 
 
 def user_of(request):
@@ -182,18 +191,21 @@ LOGIN_PAGE = PAGE_HEAD + """<main class="col"><h1>Montreal Parking</h1>
 <div class="err" id="pkErr"></div></div>
 <details id="pwd" open><summary>Use your password</summary>
 <form class="login" method="post" action="/login">
-<label for="u">Username</label><input id="u" name="username" autocomplete="username" autocapitalize="none" autofocus required>
+<label for="u">Username</label><input id="u" name="username" value="__USER__" autocomplete="username" autocapitalize="none" autofocus required>
 <label for="p">Password</label><input id="p" name="password" type="password" autocomplete="current-password" required>
 <details class="code"><summary>My login also has an authenticator code</summary>
 <label for="c">Authenticator code (or a recovery code)</label>
 <input id="c" name="code" inputmode="numeric" autocomplete="one-time-code"></details>
 <button>Sign in</button>__MSG__</form></details></main>""" + PASSKEY_JS + """<script>
+const failed = document.querySelector("#pwd .err");          // a wrong sign-in keeps the form open
+let hasCode = false;
+try { hasCode = localStorage.getItem("mp_totp") === "1"; } catch (e) {}
+if (failed || hasCode) document.querySelector("details.code").open = true;  // so a missing code is never hidden
 if (window.PublicKeyCredential && navigator.credentials) {
   document.getElementById("pk").hidden = false;
   document.getElementById("pkBtn").onclick = () => passkeySignIn(document.getElementById("pkErr"));
   let known = false;
   try { known = localStorage.getItem("mp_pk") === "1"; } catch (e) {}
-  const failed = document.querySelector("#pwd .err");      // a wrong password keeps the form open
   if (known) {                                              // this browser has a passkey: lead with it
     document.querySelector("main").classList.add("pkfirst");
     document.getElementById("pkBtn").className = "big";
@@ -203,8 +215,9 @@ if (window.PublicKeyCredential && navigator.credentials) {
 </script></body></html>"""
 
 
-def login_page(msg="", status=200):
-    return HTMLResponse(LOGIN_PAGE.replace("__MSG__", msg), status_code=status)
+def login_page(msg="", status=200, username=""):
+    return HTMLResponse(LOGIN_PAGE.replace("__USER__", escape(username, quote=True)).replace("__MSG__", msg),
+                        status_code=status)
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -223,7 +236,7 @@ def login_post(request: Request, username: str = Form(...), password: str = Form
     try:
         token = accounts.login(username, password, code, device_name(request), ip)
     except AuthError as e:
-        resp = login_page(f'<div class="err">{escape(e.detail)}</div>', e.status)
+        resp = login_page(f'<div class="err">{escape(e.detail)}</div>', e.status, username)
         resp.headers.update(e.headers)
         return resp
     resp = RedirectResponse("/", status_code=303)
@@ -381,7 +394,7 @@ def settings(request: Request):
 <h2>How you sign in</h2>
 <ul class="note"><li><b>Passkeys:</b> {summary['passkeys']} set up. This is the normal way in.</li>
 <li><b>Password:</b> the fallback. Change it on the NAS with <code>cli.py reset-password</code>.</li>
-<li><b>Authenticator code:</b> {'on, so the password also needs a code. Remove it on the NAS with <code>cli.py remove-authenticator</code>.' if summary['authenticator'] else 'off. A password of 14 or more characters is all it takes, so keep it long.'}</li></ul>
+<li><b>Authenticator code:</b> {'on, so signing in with the password also needs a code (a passkey replaces both). Remove it on the NAS with <code>cli.py remove-authenticator</code>.' if summary['authenticator'] else 'off. A password of 14 or more characters is all it takes, so keep it long.'}</li></ul>
 <h2 id="passkey">Passkey (Face ID)</h2>
 <p class="note">A passkey lets this phone or computer sign in with Face ID or Touch ID, with nothing to type.
 Set one up on each device you use. Adding one asks for your password once, to confirm it is you.</p>
@@ -448,7 +461,8 @@ def meta(request: Request):
 
 
 @app.get("/api/curbs")
-def curbs(request: Request, west: float, south: float, east: float, north: float, t: str | None = None,
+def curbs(request: Request, west: float = Query(allow_inf_nan=False), south: float = Query(allow_inf_nan=False),
+          east: float = Query(allow_inf_nan=False), north: float = Query(allow_inf_nan=False), t: str | None = None,
           stay: int | None = Query(None, ge=5, le=1440), paid: bool = False):
     need_user(request)
     _ready()
@@ -469,7 +483,8 @@ def curb(request: Request, i: int, t: str | None = None,
 
 
 @app.get("/api/here")
-def here(request: Request, lat: float, lon: float, heading: float | None = Query(None), t: str | None = None,
+def here(request: Request, lat: float = Query(ge=-85, le=85, allow_inf_nan=False), lon: float = Query(ge=-180, le=180, allow_inf_nan=False),
+         heading: float | None = Query(None, allow_inf_nan=False), t: str | None = None,
          stay: int | None = Query(None, ge=5, le=1440), paid: bool = False):
     need_user(request)
     _ready()
@@ -478,10 +493,10 @@ def here(request: Request, lat: float, lon: float, heading: float | None = Query
 
 # --- where I parked ---------------------------------------------------------------------
 class ParkedBody(BaseModel):
-    lat: float
-    lon: float
-    accuracy: float | None = None
-    note: str = ""
+    lat: float = Field(ge=-85, le=85, allow_inf_nan=False)
+    lon: float = Field(ge=-180, le=180, allow_inf_nan=False)
+    accuracy: float | None = Field(None, ge=0, le=100_000, allow_inf_nan=False)
+    note: str = Field("", max_length=500)
 
 
 class NoteBody(BaseModel):

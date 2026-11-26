@@ -22,11 +22,13 @@ not, why ("not now: no parking", or "only until 16:00, then no stopping"). The m
 
 **Where you parked:** tap the **Park here** button (bottom-right, above Drive mode). It saves your phone's GPS
 position, drops a red P pin on the map and names the street. The button then becomes a green **Back to car**:
-one tap opens your phone's own maps app with walking directions to the car (Apple Maps on an iPhone or iPad,
-your default maps app on Android, Google Maps on a computer). Tap the pin for a card with how long ago you
+one tap opens your phone's own maps app. On an iPhone or iPad that is Apple Maps with walking directions; on
+Android it is your default maps app at the car's pin (tap Directions there); on a computer it is Google Maps
+with walking directions. Tap the pin for a card with how long ago you
 parked, a note field (level, landmark), **Move here** and **Clear**. One spot is kept per login, on the server
-(`parked.db` in the data folder), so your phone and your computer see the same spot. GPS needs the https
-(Tailscale) address; if the location can't be read it offers to save the centre of the map instead.
+(in `auth.db`, tied to the login so deleting a login deletes its spot), so your phone and your computer see
+the same spot. The button waits until the saved spot has been read, so a weak signal can never overwrite it.
+GPS needs the https (Tailscale) address; if the location can't be read it offers to save the centre of the map instead.
 
 ## How it works
 ```
@@ -76,7 +78,8 @@ checks (columns present, row counts within 10% of the last good run); otherwise 
   random words is fine). Passwords are Argon2id with a secret pepper.
 * **An authenticator is optional.** `cli.py create-user --with-authenticator` (or `add-authenticator` later) makes
   a login also ask for a code, with 10 one-time recovery codes. A login that has one shows the code under
-  "My login also has an authenticator code" on the sign-in page.
+  "My login also has an authenticator code" on the sign-in page (it opens by itself after a failed sign-in, and
+  once this browser has seen the login has one). A passkey replaces both the password and the code.
 * **Logins and recovery happen on the NAS, never on the web:**
   ```
   docker exec -it mtl-parking-app python cli.py create-user --username paul

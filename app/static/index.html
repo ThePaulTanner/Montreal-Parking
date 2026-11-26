@@ -451,7 +451,7 @@ syncFind();
 
 
 /* ---------- where I parked ---------- */
-let car = null, carMarker = null, toastTimer = null;
+let car = null, carMarker = null, toastTimer = null, carLoaded = false;
 const carBtn = document.getElementById("carBtn"), carLbl = document.getElementById("carLbl");
 const CAR_HEADERS = {"Content-Type": "application/json", "X-Requested-With": "MontrealParking"};
 
@@ -473,7 +473,8 @@ async function carApi(method, body) {
 // Android: a geo: link, which opens whichever maps app is the default. Anything else: Google Maps.
 function navUrl(lat, lon, label, ua, touchPoints) {
   ua = ua || navigator.userAgent || "";
-  const ll = lat.toFixed(6) + "," + lon.toFixed(6), name = encodeURIComponent(label || "My car");
+  const ll = lat.toFixed(6) + "," + lon.toFixed(6);
+  const name = encodeURIComponent(label || "My car").replace(/[()]/g, (c) => c === "(" ? "%28" : "%29");  // brackets would end a geo: label
   const ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && (touchPoints ?? navigator.maxTouchPoints) > 1);
   if (ios) return `https://maps.apple.com/?daddr=${ll}&dirflg=w&q=${name}`;
   if (/Android/.test(ua)) return `geo:${ll}?q=${ll}(${name})`;
@@ -561,13 +562,26 @@ async function parkHere(replace) {
     syncCar(); toast(car.street ? "Parked on " + car.street : "Parking spot saved"); showCar();
   } catch (e) { toast(e.message); }
 }
-carBtn.onclick = () => { car ? navigateToCar() : parkHere(false); };
-fetch("/api/parked", {credentials: "same-origin"}).then((r) => r.ok ? r.json() : null)
-  .then((d) => { if (d && d.parked) { car = d.parked; syncCar(); } }).catch(() => {});
+async function loadCar() {
+  try {
+    const r = await fetch("/api/parked", {credentials: "same-origin"});
+    if (!r.ok) return;
+    const d = await r.json();
+    car = d.parked || null; carLoaded = true; syncCar();
+  } catch (e) { /* offline: carLoaded stays false */ }
+}
+// Until the saved spot has been read we do not know whether there is one, and "Park here" would overwrite it.
+carBtn.onclick = async () => {
+  if (!carLoaded) await loadCar();
+  if (!carLoaded) { toast("Could not check your saved spot. Try again."); return; }
+  car ? navigateToCar() : parkHere(false);
+};
+loadCar();
 
 /* ---------- offer to set up a passkey if there is none ---------- */
 fetch("/api/me", {credentials: "same-origin"}).then((r) => r.ok ? r.json() : null).then((d) => {
   try {
+    if (d) localStorage.setItem("mp_totp", d.authenticator ? "1" : "0");
     if (!d || d.passkeys > 0 || !(window.PublicKeyCredential && window.isSecureContext)) return;
     if (localStorage.getItem("mp_pk_later") === "1") return;
   } catch (e) { return; }

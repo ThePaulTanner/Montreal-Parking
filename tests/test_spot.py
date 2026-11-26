@@ -5,6 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
+from parking.accounts import AuthService
 from parking.spot import SpotStore
 
 
@@ -16,8 +17,16 @@ class Clock:
 
 
 @pytest.fixture
-def spots(tmp_path):
-    return SpotStore(str(tmp_path / "parked.db"), clock=Clock())
+def logins(tmp_path):
+    svc = AuthService(str(tmp_path / "auth.db"), "s" * 32)
+    for name in ("one", "two"):                       # users 1 and 2 exist, as they do in the real file
+        svc.create_user(name, "a long enough password")
+    return svc
+
+
+@pytest.fixture
+def spots(tmp_path, logins):
+    return SpotStore(str(tmp_path / "auth.db"), clock=Clock())
 
 
 def test_nothing_saved_at_first(spots):
@@ -65,3 +74,17 @@ def test_notes_are_trimmed_cleaned_and_can_be_edited(spots):
 def test_an_absurd_accuracy_is_dropped(spots):
     assert spots.set(1, 45.5, -73.5, accuracy=float("nan"))["accuracy_m"] is None
     assert spots.set(1, 45.5, -73.5, accuracy=-5)["accuracy_m"] is None
+
+
+def test_deleting_a_login_deletes_its_spot_and_a_new_login_never_inherits_it(spots, logins):
+    spots.set(2, 45.5, -73.5, note="sam's car")
+    assert logins.delete_user("two") is True
+    assert spots.get(2) is None                                     # gone with the login
+    logins.create_user("three", "another long password")            # SQLite reuses id 2 for the newest login
+    assert logins.users()[-1]["id"] == 2
+    assert spots.get(2) is None                                     # the new login does not see the old car
+
+
+def test_a_spot_for_a_login_that_does_not_exist_is_refused(spots):
+    with pytest.raises(ValueError):
+        spots.set(99, 45.5, -73.5)

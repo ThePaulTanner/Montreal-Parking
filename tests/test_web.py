@@ -146,7 +146,7 @@ def test_save_read_note_and_clear_the_parked_spot(client):
 
 
 def test_an_impossible_position_is_refused(client):
-    assert client.post("/api/parked", json={"lat": 123.0, "lon": -73.5}, headers=XHR).status_code == 400
+    assert client.post("/api/parked", json={"lat": 123.0, "lon": -73.5}, headers=XHR).status_code == 422
     assert client.get("/api/parked").json() == {"parked": None}
 
 
@@ -174,6 +174,8 @@ def test_the_navigate_button_opens_the_phones_own_maps_app():
         "https://maps.apple.com/?daddr=45.525500,-73.576000&dirflg=w&q=My%20car"           # Apple Maps, walking
     assert _nav_url(45.5255, -73.576, "My car", ipad_desktop_mode, 5).startswith("https://maps.apple.com/")
     assert _nav_url(45.5255, -73.576, "My car", android, 5) == "geo:45.525500,-73.576000?q=45.525500,-73.576000(My%20car)"
+    # brackets in a street name would end the geo: label early, so they are escaped
+    assert _nav_url(45.5, -73.5, "My car on rue X (est)", android, 5).endswith("(My%20car%20on%20rue%20X%20%28est%29)")
     assert _nav_url(45.5255, -73.576, "My car", windows, 0) == \
         "https://www.google.com/maps/dir/?api=1&destination=45.525500,-73.576000&travelmode=walking"
     assert _nav_url(45.5255, -73.576, "My car", mac, 0).startswith("https://www.google.com/maps/dir/")   # a real Mac
@@ -221,3 +223,57 @@ def test_me_endpoint_reports_the_sign_in_methods(client, anon):
 def test_the_map_page_offers_to_set_up_a_passkey(client):
     html = client.get("/").text
     assert 'id="pkNudge"' in html and "/settings#passkey" in html and 'id="pkLater"' in html
+
+
+# --- findings from the code review of this PR ------------------------------------------
+
+def test_impossible_positions_are_refused_before_any_street_lookup(client):
+    for body in ({"lat": 90, "lon": 0}, {"lat": -90, "lon": 0}, {"lat": 45.5, "lon": 181},
+                 {"lat": 45.5, "lon": -73.5, "accuracy": -3}):
+        assert client.post("/api/parked", json=body, headers=XHR).status_code == 422, body
+    nan = client.post("/api/parked", content='{"lat": NaN, "lon": 0}', headers={**XHR, "Content-Type": "application/json"})
+    assert nan.status_code == 422                                   # was a 500
+    assert client.get("/api/parked").json() == {"parked": None}
+
+
+def test_the_here_and_curbs_queries_refuse_the_poles_and_nan(client):
+    assert client.get("/api/here", params={"lat": 90, "lon": 0}).status_code == 422     # used to hang the worker
+    assert client.get("/api/here", params={"lat": "nan", "lon": 0}).status_code == 422
+    assert client.get("/api/curbs", params={"west": "nan", "south": 45.5, "east": -73.5, "north": 45.6}).status_code == 422
+
+
+def test_the_store_itself_survives_a_pole_or_nan():
+    from parking.store import Store
+    st = Store("unused")
+    assert st.here(90.0, 0.0, None, None) == {"found": False}
+    assert st.here(float("nan"), 0.0, None, None) == {"found": False}
+    assert st.viewport(float("nan"), 45.5, -73.5, 45.6, None)["features"] == []
+
+
+def test_a_failed_sign_in_keeps_the_username_and_shows_the_code_box(anon):
+    bad = anon.post("/login", data={"username": "paul", "password": "not the password at all"})
+    assert bad.status_code == 401 and 'value="paul"' in bad.text            # not retyped
+    html = bad.text
+    assert 'class="err"' in html and 'details.code").open = true' in html   # script opens the code box on a failure
+    tricky = anon.post("/login", data={"username": '"><script>x</script>', "password": "nope nope nope nope"})
+    assert "<script>x</script>" not in tricky.text                          # the name is escaped
+
+
+def test_the_map_page_remembers_whether_the_login_has_an_authenticator(client):
+    html = client.get("/").text
+    assert 'localStorage.setItem("mp_totp"' in html
+
+
+def test_park_here_waits_until_the_saved_spot_has_been_read(client):
+    html = client.get("/").text
+    assert "carLoaded" in html and "Could not check your saved spot" in html
+    assert html.index("if (!carLoaded) await loadCar();") < html.index("car ? navigateToCar() : parkHere(false);")
+
+
+def test_settings_says_a_passkey_replaces_both_password_and_code():
+    secret, _, _ = server.accounts.create_user("sam", "a long enough password", authenticator=True)
+    token = server.accounts.login("sam", "a long enough password", pyotp.TOTP(secret).now(), "Test browser")
+    with TestClient(server.app, follow_redirects=False) as c:
+        c.cookies.set(server.COOKIE, token)
+        html = c.get("/settings").text
+    assert "Authenticator code:</b> on" in html and "a passkey replaces both" in html
